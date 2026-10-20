@@ -45,59 +45,67 @@
    （`CLAUDE.md` / `AGENTS.md` / `.cursor/rules` / `GEMINI.md` / `SKILL.md`），  
    同一份内容编译成不同格式，行为完全一致。
 
-## 5 分钟上手
+## 5 分钟上手（Windows 实测）
 
-### 1. 建私有仓库
+### 1. 克隆到 D 盘
 
-在 GitHub 新建 **私有** 仓库 `brain-data`（空仓库，不要 README），  
-或本地裸仓库 + Syncthing（见 [docs/SECURITY.md](docs/SECURITY.md)）。
-
-### 2. 装技能
-
-```bash
-git clone https://github.com/<你>/ai-brain.git && cd ai-brain
-
-# Windows
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-# macOS / Linux
-chmod +x scripts/install.sh && ./scripts/install.sh
-
-# 让 brain 命令可用（一次性）
-# Windows:  setx PATH "%USERPROFILE%\.ai-brain\bin;%PATH%"
-# macOS:    export PATH="$HOME/.ai-brain/bin:$PATH"
+```powershell
+git clone https://github.com/<你>/ai-brain.git D:\ai-brain
 ```
 
-### 3. 绑定记忆仓库
+安装根目录 = 你克隆到的位置，所以放在 `D:\ai-brain` 就全在 D 盘。换机时重复这一条即可。
 
-```bash
-brain init --repo git@github.com:<你>/brain-data.git --device win-office
-brain doctor          # 自检：git 身份、远端连通、条目数
+### 2. 一条命令装好
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\ai-brain\scripts\install.ps1
 ```
 
-### 4. 灌入你的第一批记忆
+它会做四件事：
 
-```bash
-brain add --type identity --title "我是谁" \
-  --body "AI 自媒体创作者，账号 AI观察者，做口播知识科普。目标：把内容生产流程产品化。"
+- 下载便携 Python 到 `D:\ai-brain\runtime`（11MB，不写注册表、不动系统 PATH）
+- 生成 `brain` 命令到 `D:\ai-brain\bin`，并加入用户 PATH
+- 检测已装的客户端，把入口文件写进去（Claude Code / Codex / WorkBuddy）
+- 失败就报清楚，不会留下半装状态
 
-brain add --type preference --title "交付默认格式" \
-  --body "中文、先结论后论证、表格优先于长段落。禁止'好问题'这类客套开头。" \
-  --tags "写作,风格"
+已有系统 Python 想省这 11MB：加 `-SkipRuntime`。
 
-brain add --type decision --title "剪辑用剪映不用达芬奇" \
-  --body "机器 i5-9500F/16G/1060-6G，达芬奇要求更高会卡。理由：稳定性优先于功能。" \
-  --tags "工具,剪辑"
+### 3. 建私有记忆库
+
+```powershell
+gh repo create brain-data --private
+brain init --repo https://github.com/<你>/brain-data.git --device win-office
+brain doctor      # 自检：git 身份、远端连通、条目数
 ```
 
-### 5. 生成各工具入口 + 同步
+### 4. 灌入第一批记忆
 
-```bash
-brain sync -m "初始化"
-brain compile --target all        # 产出 dist/{claude,codex,cursor,gemini,workbuddy,chatgpt}
+```powershell
+brain add --type identity --title "我是谁" --body "AI 自媒体创作者，做口播知识科普。长期目标：把内容生产流程产品化。"
+brain add --type preference --title "交付默认格式" --body "中文、先结论后论证、表格优先于长段落。不要客套开头。" --tags "写作,风格"
+brain add --type decision --title "剪辑用剪映不用达芬奇" --body "机器 i5-9500F/16G/1060-6G，达芬奇要求更高会卡。稳定性优先于功能。" --tags "工具,剪辑"
 ```
 
-把 `dist/` 里对应文件放到各工具的入口位置（见 [适配说明](#接入矩阵)），  
-再加一个钩子（`adapters/claude/hooks.json`），就全自动了。
+`--body` 支持长文本；长内容用 `--file` 直接读一篇 Markdown 更省事。
+
+### 5. 记忆变了，刷新入口
+
+```powershell
+python D:\ai-brain\scripts\refresh.py
+```
+
+改了记忆不刷新，`CLAUDE.md` / `SKILL.md` 里还是旧快照。建议在 `brain sync` 后顺手跑一次。
+
+### 从已有笔记迁移（可选）
+
+已经有一套 Obsidian / 文件夹笔记，可以直接搬进来：
+
+```powershell
+python D:\ai-brain\scripts\migrate_obsidian.py --src "D:\你的Vault" --dst D:\ai-brain-data --dry-run
+```
+
+按 `##` 小节拆成一条一文件，旧的机制类条目会自动标注「历史，已取代」，不会污染简报。
+
 
 ## 接入矩阵
 
@@ -267,6 +275,8 @@ ai-brain/
 ├── scripts/
 │   ├── install.ps1           Windows 安装
 │   ├── install.sh            macOS / Linux 安装
+│   ├── refresh.py            记忆变更后刷新各客户端入口
+│   ├── migrate_obsidian.py   从 Obsidian / 文件夹笔记迁移
 │   ├── validate.py           8 项可执行验收
 │   ├── mcp_server.py         MCP stdio 服务器
 │   └── install-shim.md       brain 命令安装说明

@@ -82,8 +82,8 @@ def main():
               "--body", "所有交付物用简体中文，先结论后论证。", "--tags", "写作")
         rc, out = brain(dev1, "brief")
         assert "默认中文" in out, "简报里没有刚写入的条目"
-        assert "身份与硬规则" in out, "简报缺少身份区"
-        return "add → brief 立即可见，条目进入身份与硬规则区"
+        assert "身份" in out, "简报缺少身份区"
+        return "add → brief 立即可见，条目进入身份区"
 
     # ---------------------------------------------------------------- 2 跨设备
     def t2():

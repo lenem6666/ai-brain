@@ -417,23 +417,30 @@ def cmd_brief(a):
     parts.append(f"# 大脑简报 · {datetime.now().strftime('%Y-%m-%d %H:%M')} · 设备 {cfg.get('device', HOST)}")
     parts.append("> 由 ai-brain 生成。这是跨设备同步的长期记忆快照，不是本次对话内容。")
 
-    def section(title, items, with_body=False, limit=40):
+    def section(title, items, with_body=False, limit=40, body_lines=6):
         if not items:
             return
         chunk = [f"\n## {title}"]
         for m in items[:limit]:
             chunk.append(entry_line(m))
             if with_body and m["_body"]:
-                for line in m["_body"].strip().splitlines()[:12]:
+                lines = [ln for ln in m["_body"].strip().splitlines() if ln.strip()]
+                for line in lines[:body_lines]:
                     chunk.append(f"  {line}")
+                if len(lines) > body_lines:
+                    chunk.append(f"  …（另有 {len(lines) - body_lines} 行，需要时用 recall）")
         parts.extend(chunk)
 
     def by_type(t):
-        return [m for m in entries if m["_type"] == t]
+        # 「已废止」= 被后来决策取代的历史机制，仍可 recall 查到，但不进简报，
+        # 否则 AI 会照着过时规则执行。
+        return [m for m in entries
+                if m["_type"] == t and "已废止" not in (m.get("tags") or [])]
 
-    section("身份与硬规则（必须遵守）", by_type("identity") + [m for m in by_type("preference")
-                                                  if (m.get("scope") or "global") == "global"],
-            with_body=True, limit=25)
+    section("身份（必须遵守）", by_type("identity"), with_body=True, limit=3, body_lines=14)
+    section("长期偏好与硬规则", [m for m in by_type("preference")
+                          if (m.get("scope") or "global") == "global"],
+            with_body=True, limit=25, body_lines=4)
     proj = [m for m in by_type("project") if a.project and a.project.lower() in (
         (m.get("scope") or "") + " " + " ".join(m.get("tags") or []) + " " + title_of(m)).lower()]
     section(f"当前项目：{a.project}", proj, with_body=True, limit=10)

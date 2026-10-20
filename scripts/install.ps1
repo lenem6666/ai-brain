@@ -1,127 +1,114 @@
 ﻿#Requires -Version 5.1
 <#
   ai-brain 安装脚本（Windows）
+  把技能装成可用的 brain 命令 + 各客户端入口文件。
+
   用法:
-    powershell -ExecutionPolicy Bypass -File scripts\install.ps1                  # 全量安装
-    powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -ShimOnly        # 只装 brain 命令
+    powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+    powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -SkipRuntime   # 用系统 Python
     powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Python "C:\Python312\python.exe"
+
+  设计：安装根目录 = 本脚本的上一级（即你克隆到的位置），
+        所以把仓库克隆到 D:\ai-brain，所有东西就都在 D:\ai-brain 下。
 #>
 param(
-    [switch]$ShimOnly,
-    [switch]$Force,
-    [string]$Python
+    [switch]$SkipRuntime,
+    [string]$Python,
+    [string]$RuntimeVersion = "3.13.14"
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path -Parent $PSScriptRoot
-$BrainPy  = Join-Path $RepoRoot "brain.py"
-$UserHome = $env:USERPROFILE
+$Root = Split-Path -Parent $PSScriptRoot
+$BrainPy = Join-Path $Root "brain.py"
+if (-not (Test-Path $BrainPy)) { throw "找不到 brain.py：$BrainPy" }
 
-if (-not (Test-Path $BrainPy)) { throw "找不到 brain.py: $BrainPy" }
+Write-Host "[1/5] 安装根目录: $Root"
 
-# ---------- 1) 定位 Python 3 ----------
-$PyExe  = $null
-$PyArgs = @()
+# ---------- 1) Python 运行时 ----------
+$PyExe = $null
+$RuntimePy = Join-Path $Root "runtime\python.exe"
 
 if ($Python) {
-    if (-not (Test-Path $Python) -and -not (Get-Command $Python -ErrorAction SilentlyContinue)) {
-        throw "指定的 Python 不可用: $Python"
-    }
+    if (-not (Test-Path $Python)) { throw "指定的 Python 不存在: $Python" }
     $PyExe = $Python
-} else {
-    $cands = @(
-        @{ Exe = "python";  Args = @() },
-        @{ Exe = "python3"; Args = @() },
-        @{ Exe = "py";      Args = @("-3") }
-    )
-    foreach ($c in $cands) {
-        try {
-            if (-not (Get-Command $c.Exe -ErrorAction SilentlyContinue)) { continue }
-            $out = & $c.Exe @($c.Args) --version 2>$null
-            if ("$out" -match "Python 3") { $PyExe = $c.Exe; $PyArgs = $c.Args; break }
-        } catch { }
+    Write-Host "      使用指定 Python: $PyExe"
+}
+elseif ((Test-Path $RuntimePy) -and (-not $SkipRuntime)) {
+    $PyExe = $RuntimePy
+    Write-Host "      复用已有便携运行时"
+}
+elseif (-not $SkipRuntime) {
+    $zip = Join-Path $env:TEMP "python-embed-$RuntimeVersion.zip"
+    $url = "https://www.python.org/ftp/python/$RuntimeVersion/python-$RuntimeVersion-embed-amd64.zip"
+    Write-Host "      下载便携 Python $RuntimeVersion ..."
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    $rt = Join-Path $Root "runtime"
+    New-Item -ItemType Directory -Force -Path $rt | Out-Null
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $rt)
+    Remove-Item $zip -Force
+    $PyExe = $RuntimePy
+    Write-Host "      便携运行时 -> $rt"
+}
+else {
+    foreach ($c in @("python", "python3", "py")) {
+        if (Get-Command $c -ErrorAction SilentlyContinue) {
+            $v = (& $c --version 2>&1) -join " "
+            if ($v -match "Python 3") { $PyExe = (Get-Command $c).Source; break }
+        }
     }
+    if (-not $PyExe) { throw "未找到 Python 3，请去掉 -SkipRuntime 或安装 Python。" }
+    Write-Host "      使用系统 Python: $PyExe"
 }
-if (-not $PyExe) {
-    throw "未找到 Python 3。请安装 https://www.python.org/downloads/ 或用 -Python 指定路径。"
-}
-$ver = (& $PyExe @PyArgs --version 2>&1) -join " "
-Write-Host "[install] Python: $PyExe $($PyArgs -join ' ') ($ver)"
 
-# ---------- 2) brain 命令 shim ----------
-$BinDir = Join-Path $UserHome ".ai-brain\bin"
+# ---------- 2) brain 命令 ----------
+$BinDir = Join-Path $Root "bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-$Shim   = Join-Path $BinDir "brain.cmd"
-$invoke = (@($PyExe) + $PyArgs + @("`"$BrainPy`"", "%*")) -join " "
-Set-Content -Path $Shim -Value @("@echo off", "$invoke") -Encoding ASCII
-Write-Host "[install] brain 命令 -> $Shim"
+$Shim = Join-Path $BinDir "brain.cmd"
+$shimBody = @(
+    "@echo off",
+    "setlocal",
+    "set `"BRAIN_HOME=$Root`"",
+    "set `"PYTHONUTF8=1`"",
+    "set `"PYTHONIOENCODING=utf-8`"",
+    "`"$PyExe`" `"$BrainPy`" %*"
+)
+Set-Content -Path $Shim -Value $shimBody -Encoding ASCII
+Write-Host "[2/5] brain 命令 -> $Shim"
 
-function Backup-File($p) {
-    if (Test-Path $p) {
-        $bak = "$p.bak." + (Get-Date -Format "yyyyMMddHHmmss")
-        Copy-Item $p $bak
-        Write-Host "          已备份 $p -> $bak"
-    }
+# ---------- 3) 用户 PATH ----------
+$target = $BinDir.TrimEnd('\')
+$old = [Environment]::GetEnvironmentVariable("Path", "User")
+if ([string]::IsNullOrEmpty($old)) { $old = "" }
+$parts = $old -split ';' | Where-Object { $_ -ne "" }
+if ($parts -notcontains $target) {
+    [Environment]::SetEnvironmentVariable("Path", ((@($parts) + $target) -join ';'), "User")
+    Write-Host "[3/5] 已加入用户 PATH（新开终端生效）"
+} else {
+    Write-Host "[3/5] PATH 已包含 $target"
 }
+$env:Path = "$BinDir;$env:Path"
 
-if ($ShimOnly) {
+# ---------- 4) 记忆库 ----------
+$cfg = Join-Path $Root "config.json"
+if (-not (Test-Path $cfg)) {
+    Write-Host "[4/5] 还没有记忆库，跳过入口文件部署。接下来执行（只需一次）："
+    Write-Host "      brain init --repo <你的私有仓库地址> --device <机器名>"
+    Write-Host "      然后重新运行一次本脚本，或直接运行 python scripts\refresh.py"
     Write-Host ""
-    Write-Host "下一步：把 $BinDir 加入 PATH（只需一次）"
-    Write-Host "  setx PATH `"$BinDir;%PATH%`""
-    Write-Host "重开终端后运行：brain --version"
+    Write-Host "brain 命令已就绪：$Shim"
     exit 0
 }
+Write-Host "[4/5] 已检测到记忆配置"
 
-# ---------- 3) 技能目录 ----------
-$skillTargets = @()
-if (Test-Path (Join-Path $UserHome ".claude")) {
-    $skillTargets += (Join-Path $UserHome ".claude\skills\second-brain")
-}
-if (Test-Path "D:\WorkBuddy\.workbuddy\skills") {
-    $skillTargets += "D:\WorkBuddy\.workbuddy\skills\second-brain"
-} elseif (Test-Path (Join-Path $UserHome ".workbuddy\skills")) {
-    $skillTargets += (Join-Path $UserHome ".workbuddy\skills\second-brain")
-}
-
-foreach ($t in $skillTargets) {
-    New-Item -ItemType Directory -Force -Path $t | Out-Null
-    Copy-Item (Join-Path $RepoRoot "SKILL.md") $t -Force
-    Copy-Item (Join-Path $RepoRoot "brain.py") $t -Force
-    Write-Host "[install] 技能 -> $t"
-}
-
-# ---------- 4) 各工具入口文件 ----------
-$cfg = Join-Path $UserHome ".ai-brain\config.json"
-if (-not (Test-Path $cfg)) {
-    Write-Host "[install] 尚未初始化记忆仓库，跳过入口文件（初始化后执行 brain compile --target all）"
-} else {
-    $entries = @()
-    if (Test-Path (Join-Path $UserHome ".claude")) {
-        $entries += @{ Target = "claude"; Out = (Join-Path $UserHome ".claude\CLAUDE.md") }
-    }
-    if (Test-Path (Join-Path $UserHome ".codex")) {
-        $entries += @{ Target = "codex";  Out = (Join-Path $UserHome ".codex\AGENTS.md") }
-    }
-    if (Test-Path (Join-Path $UserHome ".cursor")) {
-        $entries += @{ Target = "cursor"; Out = (Join-Path $UserHome ".cursor\rules\brain.mdc") }
-    }
-    if (Test-Path (Join-Path $UserHome ".gemini")) {
-        $entries += @{ Target = "gemini"; Out = (Join-Path $UserHome ".gemini\GEMINI.md") }
-    }
-    if ($entries.Count -eq 0) {
-        Write-Host "[install] 未检测到 Claude/Codex/Cursor/Gemini 目录，跳过入口文件"
-    }
-    foreach ($e in $entries) {
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $e.Out) | Out-Null
-        Backup-File $e.Out
-        & $PyExe @PyArgs $BrainPy compile --target $e.Target --out $e.Out | Out-Null
-        Write-Host "[install] $($e.Target) -> $($e.Out)"
-    }
-}
+# ---------- 5) 部署各客户端入口 ----------
+Write-Host "[5/5] 部署客户端入口与技能 ..."
+& $PyExe (Join-Path $Root "scripts\refresh.py")
 
 Write-Host ""
-Write-Host "完成。剩余两步："
-Write-Host "  1) setx PATH `"$BinDir;%PATH%`"   （重开终端生效）"
-Write-Host "  2) brain init --repo git@github.com:<你>/brain-data.git --device win-office"
+Write-Host "完成。验证："
+Write-Host "  brain doctor"
+Write-Host "  brain brief"
 Write-Host ""
-Write-Host "Claude Code 钩子请手动合并：adapters\claude\hooks.json -> ~\.claude\settings.json"
+Write-Host "记忆变化后重新编译入口：python scripts\refresh.py"
