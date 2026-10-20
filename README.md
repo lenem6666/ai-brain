@@ -122,9 +122,9 @@ powershell -ExecutionPolicy Bypass -File D:\ai-brain\scripts\install.ps1
 # 2) 接上同一颗大脑（私有仓库，会弹一次 GitHub 登录）
 brain init --repo https://github.com/<你>/brain-data.git --device home-pc
 
-# 3) 再跑一次安装脚本：部署入口文件 + 注册每小时自动同步
+# 3) 再跑一次安装脚本：部署入口文件 + 注册每天 10:00 自动同步
 powershell -ExecutionPolicy Bypass -File D:\ai-brain\scripts\install.ps1
-schtasks /create /tn "ai-brain-sync" /tr "\"D:\ai-brain\bin\sync-task.cmd\"" /sc hourly /mo 1 /f
+schtasks /create /tn "ai-brain-sync" /tr "\"D:\ai-brain\bin\sync-task.cmd\"" /sc daily /st 10:00 /f
 
 # 4) 验收
 brain doctor
@@ -175,7 +175,7 @@ brain brief
 | **ChatGPT 网页 / 豆包 / Kimi**       | 手动粘贴快照          | 手动          | 手动      | 自定义指令（`brain compile --target chatgpt`） |
 
 > 能力差异的根源是各产品的钩子机制，不是本方案。**有钩子的工具全自动，没有的靠协议约束模型行为**，  
-> 再叠加一条系统计划任务 `brain sync`（每小时）兜底，实际体验差别很小。
+> 再叠加一条系统计划任务 `brain sync`（每天 10:00）兜底，实际体验差别很小。
 
 ### 各工具细节
 

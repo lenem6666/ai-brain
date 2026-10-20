@@ -17,7 +17,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code | **A** | `~/.claude/CLAUDE.md` + `skills/second-brain/` | 自动（SessionStart 钩子注入） | 自动 | 自动（Stop 钩子） | 钩子是唯一能做到"关窗即同步"的机制 |
 | WorkBuddy | **B+** | `~/.workbuddy/skills/second-brain/SKILL.md` | 自动（按 description 触发） | 模型执行 `brain add` | 模型执行 `brain sync` | 技能可被自动召回，写靠协议 |
-| Codex CLI | **B** | `~/.codex/AGENTS.md`（全局）/ `./AGENTS.md`（项目） | 自动 | 模型执行 | 模型执行 | 无钩子；建议加每小时定时 `sync` |
+| Codex CLI | **B** | `~/.codex/AGENTS.md`（全局）/ `./AGENTS.md`（项目） | 自动 | 模型执行 | 模型执行 | 无钩子；建议加每天 10:00 定时 `sync` |
 | Cursor | **B** | `~/.cursor/rules/brain.mdc`（`alwaysApply: true`） | 自动 | Agent 模式可执行终端命令 | 模型执行 | Composer 模式只能读 |
 | Gemini CLI | **B** | `~/.gemini/GEMINI.md` | 自动 | 模型执行 | 模型执行 | 也可走 MCP（升到 A-） |
 | Claude Desktop | **A-** | MCP 配置 | 工具调用 | 工具调用 | 工具调用 | 需用户先说"回忆一下"才会调 |
@@ -36,7 +36,7 @@
    brain brief --max-chars 1500
    ```
    对话里需要细节时，粘贴 `brain recall "关键词"` 的输出。
-3. **任何档位都能用的一条兜底**：每小时系统计划任务执行 `brain sync`，
+3. **任何档位都能用的一条兜底**：每天 10:00 的系统计划任务执行 `brain sync`，
    保证即使模型漏写、你忘记同步，变更也会进入远端。
 
 ## 实测记录（v0.1）
