@@ -40,31 +40,49 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def _find_git():
-    """定位 git：PATH 优先，其次常见安装位置。
+def _git_candidates():
+    """候选 git，按"能用 https"的可靠性排序。
 
-    计划任务 / 服务账号启动时 PATH 往往不含 git（实测首次定时同步就因此静默失败），
-    这里给一份兜底，保证"无人值守也能同步"这条闭环真的闭合。
+    坑：某些便携版把 mingw64/bin 放进 PATH，那里的 git.exe 缺少
+    git-remote-https 助手，clone https 仓库会报
+    "git: 'remote-https' is not a git command"。Git for Windows 的 cmd/git.exe
+    才能正确解析 libexec，所以 PATH 之后紧跟常见安装位置。
     """
+    out = []
     p = shutil.which("git")
     if p:
-        return p
-    cands = [
+        out.append(p)
+    for c in (
         os.environ.get("BRAIN_GIT", ""),
-        r"D:\Program Files (x86)\WorkBuddy\resources\vendor\PortableGit\cmd\git.exe",
         r"C:\Program Files\Git\cmd\git.exe",
+        r"C:\Program Files (x86)\Git\cmd\git.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe"),
         os.path.expandvars(r"%ProgramFiles%\Git\cmd\git.exe"),
+        r"D:\Program Files (x86)\WorkBuddy\resources\vendor\PortableGit\cmd\git.exe",
         "/usr/bin/git",
         "/usr/local/bin/git",
-    ]
-    for c in cands:
-        if c and Path(c).exists():
+    ):
+        if c and Path(c).exists() and c not in out:
+            out.append(c)
+    return out or ["git"]
+
+
+GIT = _git_candidates()[0]
+_GIT_RETRIED = False
+
+
+def _git_next():
+    """切换到下一个候选（只切一次，避免死循环）。"""
+    global GIT, _GIT_RETRIED
+    if _GIT_RETRIED:
+        return None
+    for c in _git_candidates():
+        if c != GIT:
+            _GIT_RETRIED = True
+            GIT = c
             return c
-    return "git"
+    return None
 
-
-GIT = _find_git()
 
 VERSION = "0.2.0"
 
@@ -116,6 +134,33 @@ def write_text(p, s):
     p.write_text(s, encoding="utf-8", newline="\n")
 
 
+def _git_env():
+    """给 git 子进程补一个能用的 GIT_EXEC_PATH。
+
+    坑：某些精简版 Git（便携包）把 git-remote-https.exe 放在 mingw64/bin，
+    而 git --exec-path 指向空的 libexec/git-core，于是 clone https 会报
+    "git: 'remote-https' is not a git command"（从 PowerShell 启动时必现）。
+    这里只在"默认位置确实没有助手"时，才把 GIT_EXEC_PATH 指到有助手的那一层。
+    """
+    env = dict(os.environ)
+    if env.get("GIT_EXEC_PATH"):
+        return env
+    p = Path(GIT)
+    probes = [
+        p.parent,
+        p.parent.parent / "mingw64" / "bin",
+        p.parent.parent / "mingw64" / "libexec" / "git-core",
+        p.parent.parent / "libexec" / "git-core",
+    ]
+    for d in probes:
+        if (d / "git-remote-https.exe").exists():
+            default = p.parent.parent / "mingw64" / "libexec" / "git-core"
+            if d != default:
+                env["GIT_EXEC_PATH"] = str(d)
+            return env
+    return env
+
+
 def run_git(args, cwd=None, timeout=90, check=False):
     """执行 git，返回 (code, stdout, stderr)。"""
     try:
@@ -123,6 +168,7 @@ def run_git(args, cwd=None, timeout=90, check=False):
             # core.quotepath=false：否则 git 会把中文路径输出成 "\346\226..." 转义，
             # 后续按路径做 checkout / show 全部失败（冲突处理曾因此取不到文件）。
             [GIT, "-c", "core.quotepath=false"] + args,
+            env=_git_env(),
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -135,6 +181,13 @@ def run_git(args, cwd=None, timeout=90, check=False):
         die("未找到 git，请先安装 Git 并加入 PATH")
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
+    err = (p.stderr or "")
+    # 当前 git 缺少 https 助手（便携版常见）→ 换一个候选重试一次
+    if p.returncode != 0 and ("remote helper" in err or "is not a git command" in err):
+        alt = _git_next()
+        if alt:
+            info(f"当前 git 无法访问 https，改用 {alt}")
+            return run_git(args, cwd=cwd, timeout=timeout, check=check)
     if check and p.returncode != 0:
         die(f"git {' '.join(args)} 失败: {p.stderr.strip()}")
     return p.returncode, p.stdout.strip(), p.stderr.strip()
@@ -1187,12 +1240,12 @@ def cmd_doctor(a):
     ok &= code == 0
     cfg = load_config()
     if not cfg:
-        print("配置     : 未初始化 ✗")
+        print("配置     : 未初始化 [FAIL]")
         ok = False
     else:
         repo = Path(cfg["data_repo"])
-        print(f"配置     : {CONFIG_PATH} ✓")
-        print(f"记忆仓库 : {repo} {'✓' if repo.exists() else '✗'}")
+        print(f"配置     : {CONFIG_PATH} [OK]")
+        print(f"记忆仓库 : {repo} {'[OK]' if repo.exists() else '[FAIL]'}")
         ok &= repo.exists()
         name = run_git(["config", "user.name"], cwd=repo)[1]
         print(f"git 用户 : {name or '（未配置，提交会失败）'}")
@@ -1203,7 +1256,7 @@ def cmd_doctor(a):
         print(f"远端     : {remote or '（未设置，仅本地）'}")
         if remote:
             c, _, err = run_git(["ls-remote", "--exit-code", "-h", remote], cwd=repo, timeout=30)
-            print(f"远端连通 : {'✓' if c == 0 else '✗ ' + (err.splitlines()[-1] if err else '')}")
+            print(f"远端连通 : {'[OK]' if c == 0 else '[FAIL] ' + (err.splitlines()[-1] if err else '')}")
             ok &= c == 0
     print("结论     : " + ("一切正常" if ok else "存在需修复项"))
     sys.exit(0 if ok else 2)
@@ -1312,7 +1365,9 @@ def build_parser():
 
 def main():
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        # 只兜住无法编码的字符，不改编码：Windows PowerShell 控制台是 GBK，
+        # 强制 UTF-8 会让中文变成"閿欒"这种乱码（换机后第一次运行就踩）。
+        sys.stdout.reconfigure(errors="replace")
     except Exception:
         pass
     args = build_parser().parse_args()

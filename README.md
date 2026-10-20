@@ -88,13 +88,14 @@ brain add --type decision --title "剪辑用剪映不用达芬奇" --body "机�
 
 `--body` 支持长文本；长内容用 `--file` 直接读一篇 Markdown 更省事。
 
-### 5. 记忆变了，刷新入口
+### 5. 入口文件不用管
+
+`brain add` / `brain sync` 只要发现记忆有变化，就自动重编译 6 个客户端入口，
+新会话不会读到旧快照。想手动强制刷新也可以：
 
 ```powershell
 python D:\ai-brain\scripts\refresh.py
 ```
-
-改了记忆不刷新，`CLAUDE.md` / `SKILL.md` 里还是旧快照。建议在 `brain sync` 后顺手跑一次。
 
 ### 从已有笔记迁移（可选）
 
@@ -106,21 +107,59 @@ python D:\ai-brain\scripts\migrate_obsidian.py --src "D:\你的Vault" --dst D:\a
 
 按 `##` 小节拆成一条一文件，旧的机制类条目会自动标注「历史，已取代」，不会污染简报。
 
+## 第二台电脑怎么装
+
+前提只有两个：**装 Git**，**这台机器能访问 GitHub**（私有库要登录一次）。
+
+```powershell
+# 0) 没装 git 先装（已装跳过）
+winget install --id Git.Git -e
+
+# 1) 装程序（公开仓库，不需要权限）
+git clone https://github.com/<你>/ai-brain.git D:\ai-brain
+powershell -ExecutionPolicy Bypass -File D:\ai-brain\scripts\install.ps1
+
+# 2) 接上同一颗大脑（私有仓库，会弹一次 GitHub 登录）
+brain init --repo https://github.com/<你>/brain-data.git --device home-pc
+
+# 3) 再跑一次安装脚本：部署入口文件 + 注册每小时自动同步
+powershell -ExecutionPolicy Bypass -File D:\ai-brain\scripts\install.ps1
+schtasks /create /tn "ai-brain-sync" /tr "\"D:\ai-brain\bin\sync-task.cmd\"" /sc hourly /mo 1 /f
+
+# 4) 验收
+brain doctor
+brain brief
+```
+
+要点：
+
+- `--device` 每台机器取不同名字（`win-office` / `home-pc`），提交里能看出是谁写的。
+- 私有库第一次 clone 会弹浏览器授权；CI 场景可用 PAT。
+- 国内直连 GitHub 不通时，先给 git 配代理再执行第 2 步：
+  `git config --global http.https://github.com.proxy http://127.0.0.1:10809`
+- 记忆库默认落在安装目录下的 `data\`；想和主机一样独立放，加 `--dir D:\ai-brain-data`。
+- 不需要改任何硬编码路径：`bin/brain.cmd` 用自身位置推导根目录，整个文件夹搬到别的盘也能跑。
+
 ## 换机实测（2026-10-20，实测数据）
 
-在一台干净目录里完整模拟"第二台电脑"：克隆公开仓库 → 跑安装脚本（强制重新下载 11MB 运行时）→ 拉私有记忆库 → 部署入口。
+在一台干净目录 + 干净用户目录里完整模拟"第二台电脑"：克隆公开仓库 → 跑安装脚本（真实下载 11MB 运行时）→ 拉私有记忆库 → 部署入口 → 自检。
 
 | 步骤 | 结果 |
 | --- | --- |
-| 克隆技能仓库 | 326 KB |
-| 安装（含下载便携 Python） | 21.7 秒，一次通过 |
-| 拉取私有记忆库 | 93 条条目，提交历史与原机同源，无新根提交 |
-| `brain doctor` | Python 3.13.14 / 配置 / 记忆仓库 / git 身份 / 远端连通 全绿 |
-| `brain brief` | 正确显示身份与硬规则，设备名显示为新机 |
-| 入口部署 | `CLAUDE.md` 与新机技能快照 sha 一致；Codex 原有规则完整保留，区块追加在第 5–48 行 |
-| 回写远端 | 无变更时 `sync` 仅拉取，未污染远端历史 |
+| 克隆技能仓库 | 423 KB（含 `bin/`、`docs/`、`templates/`） |
+| 安装（含下载便携 Python） | 一次通过，运行时落在 `<安装根>\runtime` |
+| 拉取私有记忆库 | 97 条（88 活跃 + 9 归档），与主机逐字节一致 |
+| `brain doctor` | Python 3.13.14 / 配置 / 记忆仓库 / git 身份 / 远端连通 全 `[OK]` |
+| `brain brief` | 正确显示身份与硬规则，设备名为新机 `sim-pc` |
+| 入口部署 | `CLAUDE.md` 写入新机用户目录，正文与主机同源 |
+| 中文输出 | PowerShell 下中文正常，不再是乱码 |
 
-结论：换机只需要 3 条命令（clone → install → init），不需要手工改任何路径。全部临时产物已清理，PATH 无残留。
+这一轮模拟暴露并修掉两个只在"新机 + PowerShell"才出现的问题：
+便携 Git 的 `GIT_EXEC_PATH` 缺 https 助手（clone 报 `remote-https is not a git command`），
+以及 `brain` 强制 UTF-8 输出导致 PowerShell 里中文变乱码。两处都已修并回归。
+
+结论：换机 = clone → install → init（→ 再跑一次 install 部署入口），不需要手工改任何路径。
+全部临时产物已清理，用户 PATH 无残留。
 
 
 ## 接入矩阵
