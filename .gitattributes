@@ -1,0 +1,7 @@
+# 统一换行，避免 Windows 机器上 clone 后 shell 脚本无法执行
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
