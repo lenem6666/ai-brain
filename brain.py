@@ -39,6 +39,33 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+def _find_git():
+    """定位 git：PATH 优先，其次常见安装位置。
+
+    计划任务 / 服务账号启动时 PATH 往往不含 git（实测首次定时同步就因此静默失败），
+    这里给一份兜底，保证"无人值守也能同步"这条闭环真的闭合。
+    """
+    p = shutil.which("git")
+    if p:
+        return p
+    cands = [
+        os.environ.get("BRAIN_GIT", ""),
+        r"D:\Program Files (x86)\WorkBuddy\resources\vendor\PortableGit\cmd\git.exe",
+        r"C:\Program Files\Git\cmd\git.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Git\cmd\git.exe"),
+        "/usr/bin/git",
+        "/usr/local/bin/git",
+    ]
+    for c in cands:
+        if c and Path(c).exists():
+            return c
+    return "git"
+
+
+GIT = _find_git()
+
 VERSION = "0.2.0"
 
 # ---------------------------------------------------------------- 常量
@@ -95,7 +122,7 @@ def run_git(args, cwd=None, timeout=90, check=False):
         p = subprocess.run(
             # core.quotepath=false：否则 git 会把中文路径输出成 "\346\226..." 转义，
             # 后续按路径做 checkout / show 全部失败（冲突处理曾因此取不到文件）。
-            ["git", "-c", "core.quotepath=false"] + args,
+            [GIT, "-c", "core.quotepath=false"] + args,
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
