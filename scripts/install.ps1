@@ -18,6 +18,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"   # 别刷几百行下载进度
 $Root = Split-Path -Parent $PSScriptRoot
 $BrainPy = Join-Path $Root "brain.py"
 if (-not (Test-Path $BrainPy)) { throw "找不到 brain.py：$BrainPy" }

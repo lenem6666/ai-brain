@@ -42,9 +42,13 @@ def skill_dirs():
     if legacy.parent.exists():
         cands.append(legacy)
     out = []
+    seen = set()
     for c in cands:
-        if c not in out:
-            out.append(c)
+        key = os.path.realpath(c).lower()   # WorkBuddy 的技能目录常是 junction，按实体去重
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
     return out
 
 
