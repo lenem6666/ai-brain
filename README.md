@@ -218,7 +218,7 @@ brain hook start|stop --tool claude       # 钩子入口
 
 ```bash
 python scripts/validate.py       # 8 项功能验收，约 19 秒
-python scripts/verify_loop.py    # 18 项闭环验证（失败路径 + 真机核对）
+python scripts/verify_loop.py    # 19 项闭环验证（失败路径 + 真机核对）
 ```
 
 功能验收：
@@ -256,9 +256,13 @@ python scripts/verify_loop.py    # 18 项闭环验证（失败路径 + 真机核
 | 16 | GitHub 全新 clone 灾难演练 | PASS，96 条逐字节一致 |
 | 17 | 真机 doctor | PASS |
 | 18 | 已部署入口是否滞后于记忆库 | PASS |
+| 19 | 写入后入口是否自动刷新 | PASS，`add`/`sync` 自动重编译，无需手工 refresh |
 
 完整对照报告（含"为什么视频说的'一步'不成立"、性能数据、修掉的缺陷）：
 [docs/VIDEO-VALIDATION.md](docs/VIDEO-VALIDATION.md)。
+
+闭环最后一跳是自动的：`brain add` / `brain sync` 只要发现记忆有变化，就重编译 6 个入口文件，
+新会话不会读到旧快照（不想要可设 `BRAIN_AUTO_REFRESH=0`）。
 
 ## 冲突策略：不丢字，也不卡死
 

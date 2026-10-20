@@ -929,6 +929,35 @@ def guard_deletions(repo, force=False):
 CONFLICT_TAG = "冲突副本"
 
 
+def refresh_entries():
+    """闭环最后一跳：记忆变了就重编译各客户端入口文件，避免新会话读到旧快照。
+
+    只在标准安装（BRAIN_HOME == 程序目录）下生效，测试/多档案环境不会误写用户入口；
+    设置 BRAIN_AUTO_REFRESH=0 可关闭。失败只提示，不影响同步本身。
+    """
+    if os.environ.get("BRAIN_AUTO_REFRESH", "1") == "0":
+        return
+    here = Path(__file__).resolve().parent
+    try:
+        if Path(BRAIN_HOME).resolve() != here:
+            return
+    except Exception:
+        return
+    script = here / "scripts" / "refresh.py"
+    if not script.exists():
+        return
+    try:
+        p = subprocess.run([sys.executable, str(script)], cwd=str(here), timeout=180,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           text=True, encoding="utf-8", errors="replace")
+        if p.returncode == 0:
+            info("入口文件已刷新")
+        else:
+            info(f"入口刷新失败（记忆不受影响）: {((p.stderr or '') + (p.stdout or '')).strip()[:160]}")
+    except Exception as e:
+        info(f"入口刷新跳过: {e}")
+
+
 def _git_path(repo, name):
     code, out, _ = run_git(["rev-parse", "--git-path", name], cwd=repo)
     if code != 0 or not out:
@@ -1029,6 +1058,7 @@ def cmd_sync(a):
         info("检测到上次中断的同步，正在恢复…")
         _resolve_rebase_conflict(repo, _current_branch(repo))
 
+    head0 = run_git(["rev-parse", "HEAD"], cwd=repo)[1]
     run_git(["add", "-A"], cwd=repo)
     ensure_git_identity(repo)
     if not guard_deletions(repo, force=getattr(a, "force", False)):
@@ -1071,6 +1101,12 @@ def cmd_sync(a):
             info(f"推送失败（可能离线/无权限）: {err.splitlines()[-1] if err else ''}")
             return
         info("已同步到远端")
+
+    # 记忆有变化（本地提交或拉到别人的提交）→ 重编译入口文件，闭环最后一跳
+    if not getattr(a, "no_refresh", False):
+        head1 = run_git(["rev-parse", "HEAD"], cwd=repo)[1]
+        if head1 and head0 and head1 != head0:
+            refresh_entries()
 
 
 # ---------------------------------------------------------------- 命令: status / doctor
@@ -1154,8 +1190,12 @@ def cmd_hook(a):
         return
     repo = Path(cfg["data_repo"])
     if a.phase == "start":
+        head0 = run_git(["rev-parse", "HEAD"], cwd=repo)[1]
         if run_git(["remote"], cwd=repo)[1]:
             run_git(["pull", "--rebase", "--autostash", "--no-edit"], cwd=repo, timeout=25)
+        head1 = run_git(["rev-parse", "HEAD"], cwd=repo)[1]
+        if head0 and head1 and head0 != head1:   # 拉到新记忆 → 顺手刷新入口
+            refresh_entries()
         cmd_brief(argparse.Namespace(max_chars=6000, project=None))
     elif a.phase == "stop":
         if run_git(["status", "--porcelain"], cwd=repo)[1]:

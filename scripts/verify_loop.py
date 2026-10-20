@@ -54,8 +54,11 @@ def git(repo, *args, expect=0):
     return (p.stdout or "").strip()
 
 
-def brain(home, *args, expect=0):
-    p = sh([str(PY), str(BRAIN), *args], env={"BRAIN_HOME": str(home), "PYTHONUTF8": "1"})
+def brain(home, *args, expect=0, env=None, script=None):
+    e = {"BRAIN_HOME": str(home), "PYTHONUTF8": "1"}
+    if env:
+        e.update(env)
+    p = sh([str(PY), str(script or BRAIN), *args], env=e)
     out = ((p.stdout or "") + (p.stderr or "")).strip()
     if expect is not None and p.returncode != expect:
         raise AssertionError(f"brain {' '.join(args)} → {p.returncode}（期望 {expect}）: {out[:300]}")
@@ -305,7 +308,17 @@ def main():
         assert "第二大脑" in claude, "refresh 没把记忆协议写进 CLAUDE.md"
         assert "保留这一行" in agents, "refresh 覆盖了用户手写的 AGENTS.md"
         assert "ai-brain" in agents, "AGENTS.md 里没有写入记忆区块"
-        return "已有手写 CLAUDE.md / AGENTS.md → 用户内容保留，记忆区块追加成功"
+        # 第二次运行：入口文件里已有区块（且块内含 Windows 反斜杠路径），
+        # 这里曾因 re.sub 把 block 当模板而崩（bad escape \C），必须复验。
+        p2 = sh([str(PY), str(ROOT / "scripts" / "refresh.py")],
+                env={"USERPROFILE": str(fake_home), "HOME": str(fake_home)})
+        assert p2.returncode == 0, f"第二次 refresh 崩溃: {(p2.stderr or p2.stdout)[-300:]}"
+        claude2 = (fake_home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+        agents2 = (fake_home / ".codex" / "AGENTS.md").read_text(encoding="utf-8")
+        assert "手写内容，不能被记忆编译覆盖" in claude2, "第二次刷新丢了用户手写内容"
+        assert "保留这一行" in agents2, "第二次刷新丢了 AGENTS.md 原文"
+        assert claude2.count("第二大脑协议") == 1, "重复刷新产生了重复区块"
+        return "已有手写 CLAUDE.md / AGENTS.md → 原生内容保留、区块替换不重复、二次刷新不崩"
 
     # ---------------------------------------------------------------- 13 MCP 协议
     def t13():
@@ -417,6 +430,31 @@ def main():
         assert not stale, f"入口文件落后于记忆库: {stale}"
         return f"{checked} 个已部署入口与最新记忆快照一致（无滞后）"
 
+    # ---------------------------------------------------------------- 19 同步后入口自动刷新
+    def t19():
+        prog = tmp / "prog19"
+        rmtree(prog)
+        prog.mkdir(parents=True)
+        shutil.copy2(BRAIN, prog / "brain.py")
+        shutil.copytree(ROOT / "scripts", prog / "scripts")
+        home19, repo19 = tmp / "home19", tmp / "repo19"
+        rmtree(home19)
+        (home19 / ".claude").mkdir(parents=True)
+        (home19 / ".workbuddy" / "skills").mkdir(parents=True)
+        e = {"USERPROFILE": str(home19), "HOME": str(home19)}
+        scr = prog / "brain.py"
+        brain(prog, "init", "--repo", str(remote), "--dir", str(repo19), "--device", "dev19",
+              env=e, script=scr)
+        brain(prog, "add", "--type", "fact", "--title", "入口自动刷新标记",
+              "--body", "写入后 sync 应自动把它编译进入口文件。", env=e, script=scr)
+        brain(prog, "sync", env=e, script=scr)
+        claude = home19 / ".claude" / "CLAUDE.md"
+        assert claude.exists(), "sync 后没有生成 CLAUDE.md"
+        txt = claude.read_text(encoding="utf-8")
+        assert "入口自动刷新标记" in txt, "sync 后入口文件仍是旧快照（闭环断在最后一跳）"
+        assert "第二大脑" in txt, "入口文件缺少协议正文"
+        return "写入 → sync → CLAUDE.md 自动包含新条目（无需手工 refresh）"
+
     print("闭环检查：\n")
     tests = [
         ("1 双机基线可见", t1),
@@ -433,6 +471,7 @@ def main():
         ("12 不覆盖用户手写入口", t12),
         ("13 MCP 协议", t13),
         ("14 钩子闭环", t14),
+        ("19 同步后入口自动刷新", t19),
     ]
     if not QUICK:
         tests += [

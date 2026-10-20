@@ -49,7 +49,7 @@ def write_entry(path, text):
         return "新建"
     cur = path.read_text(encoding="utf-8")
     if START in cur and END in cur:
-        new = re.sub(re.escape(START) + r".*?" + re.escape(END) + r"\n?", block, cur, flags=re.S)
+        new = re.sub(re.escape(START) + r".*?" + re.escape(END) + r"\n?", lambda _: block, cur, flags=re.S)
         mode = "替换区块"
     elif SIG in cur:
         new = block
