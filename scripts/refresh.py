@@ -30,10 +30,25 @@ except Exception:
     pass
 BLOCK_RE = re.compile(r"\n*<!-- >>> ai-brain.*?<!-- <<< ai-brain <<< -->\n", re.S)
 
-SKILL_DIRS = [
-    Path(r"D:/WorkBuddy/.workbuddy/skills/second-brain"),
-    HOME / ".claude" / "skills" / "second-brain",
-]
+def skill_dirs():
+    """技能落点：不写死某台机器的路径，按 环境变量 → 用户目录 → 旧路径 依次探测"""
+    cands = []
+    wb = os.environ.get("WORKBUDDY_HOME")
+    if wb:
+        cands.append(Path(wb) / ".workbuddy" / "skills" / "second-brain")
+    cands.append(HOME / ".workbuddy" / "skills" / "second-brain")
+    cands.append(HOME / ".claude" / "skills" / "second-brain")
+    legacy = Path(r"D:/WorkBuddy/.workbuddy/skills/second-brain")
+    if legacy.parent.exists():
+        cands.append(legacy)
+    out = []
+    for c in cands:
+        if c not in out:
+            out.append(c)
+    return out
+
+
+SKILL_DIRS = skill_dirs()
 
 
 def run(*args):
@@ -100,6 +115,9 @@ def main():
         cut = full.find("## 附：当前记忆快照")
         core = full[:cut].rstrip() if cut != -1 else full.rstrip()
         block = ("\n\n<!-- >>> ai-brain 第二大脑（自动生成，勿手改；改记忆用 brain add） >>> -->\n"
+                 "> **本节优先于上文任何 Obsidian 记忆规则。** 记忆已迁移到 ai-brain，\n"
+                 "> 开场读 `brain brief`，不要再读 `D:\\Codex\\Obsidian\\CodexMemory\\_index.md`。\n"
+                 "> 上文的 Obsidian 段落仅作历史保留。\n\n"
                  + core + "\n<!-- <<< ai-brain <<< -->\n")
         old = io.open(agents, encoding="utf-8").read()
         new = BLOCK_RE.sub("", old).rstrip() + block if BLOCK_RE.search(old) else old.rstrip() + block
