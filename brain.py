@@ -481,9 +481,11 @@ def cmd_brief(a):
     section("习惯与偏好（按场景）", [m for m in by_type("preference")
                             if (m.get("scope") or "global") != "global"], with_body=False, limit=15)
     section("可复用方法", by_type("skill"), limit=12)
+    # 事实类最容易"用到时想不起来"：路径、端口、环境坑，给一个不占正文的紧凑分区
+    section("事实与约束", by_type("fact"), limit=10)
 
-    recent = sorted([m for m in entries if m["_type"] in ("fact", "journal")], key=age_days)[:8]
-    section("近期动态", recent, limit=8)
+    recent = sorted(by_type("journal"), key=age_days)[:8]
+    section("近期动态（日志，仅作背景）", recent, limit=8)
 
     total = len(entries)
     parts.append(f"\n## 索引统计\n- 条目总数 {total}；按类型 " +
