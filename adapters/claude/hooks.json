@@ -1,0 +1,19 @@
+{
+  "_comment": "合并进 ~/.claude/settings.json（不要整文件覆盖）。把 brain 换成你的实际命令路径。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "brain hook start --tool claude" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "brain hook stop --tool claude" }
+        ]
+      }
+    ]
+  }
+}

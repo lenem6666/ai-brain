@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 生成物
+dist/
+*.bak.*
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地配置（如含个人路径）
+.env
+config.local.json
