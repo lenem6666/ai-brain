@@ -1,7 +1,8 @@
-# 统一换行，避免 Windows 机器上 clone 后 shell 脚本无法执行
+# 统一换行：脚本类保持 CRLF（cmd/PowerShell 对 LF 容错差），其余 LF
 * text=auto eol=lf
-*.ps1 text eol=crlf
 *.cmd text eol=crlf
 *.bat text eol=crlf
+*.ps1 text eol=crlf
 *.png binary
 *.jpg binary
+*.zip binary

@@ -46,7 +46,8 @@ if (-not (Test-Path (Join-Path $src "SKILL.md"))) {
 if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Force -Path $Dest | Out-Null }
 $target = Join-Path $Dest "ai-brain-setup"
 if (Test-Path $target) {
-    $bak = "$target.bak-" + (Get-Date -Format "yyyyMMddHHmmss")
+    # 备份必须放在 skills 目录之外：那里的任何子目录带 SKILL.md 都会被当成一个技能
+    $bak = Join-Path $env:TEMP ("ai-brain-setup.bak-" + (Get-Date -Format "yyyyMMddHHmmss"))
     Move-Item $target $bak
     Write-Host "      已存在旧版本，备份到 $bak"
 }
