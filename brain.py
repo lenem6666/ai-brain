@@ -93,7 +93,9 @@ def run_git(args, cwd=None, timeout=90, check=False):
     """执行 git，返回 (code, stdout, stderr)。"""
     try:
         p = subprocess.run(
-            ["git"] + args,
+            # core.quotepath=false：否则 git 会把中文路径输出成 "\346\226..." 转义，
+            # 后续按路径做 checkout / show 全部失败（冲突处理曾因此取不到文件）。
+            ["git", "-c", "core.quotepath=false"] + args,
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -875,6 +877,9 @@ def cmd_compile(a):
     with redirect_stdout(buf):
         cmd_brief(argparse.Namespace(max_chars=a.brief_chars, project=a.project))
     brief = buf.getvalue()
+    # 编译产物要被 git 跟踪/比对，不能带"分钟级"时间戳，否则每次编译都产生假 diff
+    brief = re.sub(r"^# 大脑简报 · .*$", "# 记忆快照（由 brain compile 生成）",
+                   brief, count=1, flags=re.M)
 
     home = Path(__file__).resolve().parent.as_posix()
     core = (CORE.replace("{ver}", VERSION)
@@ -921,6 +926,96 @@ def guard_deletions(repo, force=False):
     return True
 
 
+CONFLICT_TAG = "冲突副本"
+
+
+def _git_path(repo, name):
+    code, out, _ = run_git(["rev-parse", "--git-path", name], cwd=repo)
+    if code != 0 or not out:
+        return None
+    p = Path(out)
+    return p if p.is_absolute() else Path(repo) / p
+
+
+def _rebase_in_progress(repo):
+    for n in ("rebase-merge", "rebase-apply"):
+        p = _git_path(repo, n)
+        if p and p.exists():
+            return True
+    return False
+
+
+def _current_branch(repo):
+    code, out, _ = run_git(["symbolic-ref", "--short", "HEAD"], cwd=repo)
+    if code == 0 and out:
+        return out
+    p = _git_path(repo, "rebase-merge/head-name")
+    if p and p.exists():
+        return p.read_text(encoding="utf-8").strip().rsplit("/", 1)[-1]
+    return "main"
+
+
+def _resolve_rebase_conflict(repo, branch):
+    """冲突兜底：既不丢字，也不留下卡死的 rebase 现场。
+
+    条目一文件的设计下，"冲突"就是同一事实存在两个版本。这里把本地版本另存为
+    一条新记忆（打「冲突副本」标签），原条目取远端版本，提交后重新 rebase。
+    保留双方、等人 distill 合并，比任何自动取舍都安全，也不会让人卡在
+    "rebase 中间态 → 之后每次同步都失败"的死循环里。
+    """
+    code, out, _ = run_git(["diff", "--name-only", "--diff-filter=U"], cwd=repo)
+    paths = [l.strip() for l in out.splitlines() if l.strip()]
+    local = {}
+    for rel in paths:
+        c, o, _ = run_git(["show", f"REBASE_HEAD:{rel}"], cwd=repo)
+        if c != 0:
+            c, o, _ = run_git(["show", f":3:{rel}"], cwd=repo)
+        if c == 0:
+            local[rel] = o
+    run_git(["rebase", "--abort"], cwd=repo)
+    # 关键：把分支指回远端最新，本地改动全部保留在暂存区。
+    # 若只是 abort 后重跑 pull --rebase，被重放的本地提交仍会再冲突一次（死循环）。
+    c, _, err = run_git(["reset", "--soft", f"origin/{branch}"], cwd=repo)
+    if c != 0:
+        info(f"对齐远端失败，已回滚到本地提交: {err.splitlines()[-1] if err else ''}")
+        return []
+
+    saved = []
+    for rel, txt in local.items():
+        if not txt.strip():
+            continue
+        src = Path(repo) / rel
+        try:
+            meta, body = parse_front(txt)
+        except Exception:
+            meta, body = {}, txt
+        etype = meta.get("type") or (src.parent.name if src.parent.name != ARCHIVE else "fact")
+        title = meta.get("title") or src.stem
+        sid = short_id(title)
+        meta.update({
+            "id": f"{etype}-{today().replace('-', '')}-{sid}",
+            "type": etype,
+            "created": now_iso(),
+            "source": f"conflict@{load_config().get('device', HOST)}",
+            "title": f"{title}（冲突副本）",
+        })
+        tags = [t for t in (meta.get("tags") or []) if t != CONFLICT_TAG]
+        meta["tags"] = tags + [CONFLICT_TAG]
+        dst = src.parent / f"{slugify(title)}-conflict-{sid}.md"
+        note = (f"\n\n> 同步冲突副本：{now_iso()} 自动保留的本地版本，"
+                f"原条目已取远端版本。核对后合并到原条目，再删除本副本。\n")
+        write_text(dst, dump_front(meta, body.rstrip() + note))
+        c, _, err = run_git(["checkout", f"origin/{branch}", "--", rel], cwd=repo)
+        if c != 0:
+            info(f"取远端版本失败 {rel}: {err.splitlines()[-1] if err else ''}")
+        saved.append(dst.relative_to(repo).as_posix())
+    run_git(["add", "-A"], cwd=repo)
+    run_git(["commit", "-m", f"merge: 冲突保留双版本（{len(saved)} 条）"], cwd=repo)
+    for s in saved:
+        info(f"已保留本地版本 → {s}")
+    return saved
+
+
 def cmd_sync(a):
     cfg = require_config()
     repo = Path(cfg["data_repo"])
@@ -928,6 +1023,11 @@ def cmd_sync(a):
     if code != 0:
         info("记忆目录不是 git 仓库，跳过同步")
         return
+
+    # 上次同步若中断在 rebase 中间态，先修好再继续，避免把冲突标记当成正常内容提交
+    if _rebase_in_progress(repo):
+        info("检测到上次中断的同步，正在恢复…")
+        _resolve_rebase_conflict(repo, _current_branch(repo))
 
     run_git(["add", "-A"], cwd=repo)
     ensure_git_identity(repo)
@@ -953,10 +1053,17 @@ def cmd_sync(a):
     if has_remote and not a.no_pull and remote_has_branch:
         code, _, err = run_git(["pull", "--rebase", "--autostash", "--no-edit"], cwd=repo, timeout=180)
         if code != 0:
-            last = err.splitlines()[-1] if err else ""
-            info(f"拉取失败（可能离线或冲突）: {last}")
-            info("冲突处理：条目一文件，保留双方即可；git status 查看后手工合并，再 brain sync")
-            return
+            if _rebase_in_progress(repo):
+                saved = _resolve_rebase_conflict(repo, branch)
+                if saved:
+                    info(f"同步冲突：已保留双版本 {len(saved)} 条，原条目取远端版")
+                else:
+                    info("同步冲突：已回滚到本地提交，未丢数据")
+            else:
+                last = err.splitlines()[-1] if err else ""
+                info(f"拉取失败（可能离线）: {last}")
+                info("本地提交已保留，未丢数据；联网后重跑 brain sync 即可收敛")
+                sys.exit(4)
     if has_remote and not a.no_push:
         push_args = ["push"] if remote_has_branch else ["push", "-u", "origin", branch]
         code, _, err = run_git(push_args, cwd=repo, timeout=180)

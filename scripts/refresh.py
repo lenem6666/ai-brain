@@ -29,6 +29,38 @@ try:
 except Exception:
     pass
 BLOCK_RE = re.compile(r"\n*<!-- >>> ai-brain.*?<!-- <<< ai-brain <<< -->\n", re.S)
+SIG = "<!-- 本文件由 ai-brain 自动生成"
+START = "<!-- >>> ai-brain >>> -->"
+END = "<!-- <<< ai-brain <<< -->"
+
+
+def write_entry(path, text):
+    """写客户端入口文件：已有内容绝不整体覆盖。
+
+    - 文件不存在 → 整份写入（带区块标记）
+    - 已有本工具区块 → 只替换块内，块外原样保留
+    - 是历史版本整份生成的文件（带自动生成签名）→ 整份重写
+    - 用户自己的文件 → 追加区块，原文一字不动
+    """
+    path = Path(path)
+    block = f"{START}\n{text.rstrip()}\n{END}\n"
+    if not path.exists():
+        path.write_text(block, encoding="utf-8", newline="\n")
+        return "新建"
+    cur = path.read_text(encoding="utf-8")
+    if START in cur and END in cur:
+        new = re.sub(re.escape(START) + r".*?" + re.escape(END) + r"\n?", block, cur, flags=re.S)
+        mode = "替换区块"
+    elif SIG in cur:
+        new = block
+        mode = "整份重写"
+    else:
+        new = cur.rstrip() + "\n\n" + block
+        mode = "追加区块（保留原文）"
+    if new != cur:
+        path.write_text(new, encoding="utf-8", newline="\n")
+    return mode
+
 
 def skill_dirs():
     """技能落点：不写死某台机器的路径，按 环境变量 → 用户目录 → 旧路径 依次探测"""
@@ -88,8 +120,8 @@ def main():
     if claude_cfg.exists():
         txt = render("claude")
         if txt:
-            (claude_cfg / "CLAUDE.md").write_text(txt, encoding="utf-8", newline="\n")
-            ok.append(f"CLAUDE.md（{len(txt)} 字符）")
+            mode = write_entry(claude_cfg / "CLAUDE.md", txt)
+            ok.append(f"CLAUDE.md（{len(txt)} 字符，{mode}）")
         else:
             skipped.append("CLAUDE.md")
     else:

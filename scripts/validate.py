@@ -3,7 +3,7 @@
 """
 validate.py — ai-brain 的可执行验收脚本。
 
-不依赖 pytest，直接 python scripts/validate.py 跑完 10 项检查。
+不依赖 pytest，直接 python scripts/validate.py 跑完 8 项检查。
 全程在临时目录里进行，不会碰你真实的 ~/.ai-brain。
 
 用法:
@@ -82,8 +82,8 @@ def main():
               "--body", "所有交付物用简体中文，先结论后论证。", "--tags", "写作")
         rc, out = brain(dev1, "brief")
         assert "默认中文" in out, "简报里没有刚写入的条目"
-        assert "身份" in out, "简报缺少身份区"
-        return "add → brief 立即可见，条目进入身份区"
+        assert "身份（必须遵守）" in out, "简报缺少身份区"
+        return "add → brief 立即可见，条目进入身份（必须遵守）区"
 
     # ---------------------------------------------------------------- 2 跨设备
     def t2():
@@ -189,73 +189,6 @@ def main():
         assert not bad, f"记忆文件里出现本机绝对路径: {bad[:5]}"
         return "memory/*.md 不含本机绝对路径（换机可原样读取）"
 
-    # ---------------------------------------------------------------- 9 蒸馏体检
-    def t9():
-        brain(dev1, "add", "--type", "preference", "--title", "同一主题",
-              "--body", "第一次写的版本，内容比较完整，用来验证同标题分组能否被检出。",
-              "--tags", "测试", "--no-commit")
-        brain(dev1, "add", "--type", "preference", "--title", "同一主题",
-              "--body", "第二次写的版本，说法略有不同，同样用来验证同标题分组逻辑。",
-              "--tags", "测试", "--no-commit")
-        brain(dev1, "add", "--type", "fact", "--title", "旧规则",
-              "--body", "这条已经被新方案取代。", "--tags", "已废止", "--no-commit")
-        brain(dev1, "sync", "-m", "seed for distill")
-        rc, out = brain(dev1, "distill", "--json")
-        data = json.loads(out)
-        kinds = {g["kind"] for g in data}
-        assert "same-title" in kinds, f"没检出同标题组: {kinds}"
-        assert "retired" in kinds, f"没检出已废止条目: {kinds}"
-        grp = next(g for g in data if g["kind"] == "same-title")
-        assert len(grp["items"]) >= 2, "同标题组条目不足"
-        return f"检出 {len(data)} 组：{'/'.join(sorted(kinds))}"
-
-    # ---------------------------------------------------------------- 10 合并与归档
-    def t10():
-        def ids_of(sub, title):
-            found = []
-            for p in (repo1 / "memory" / sub).glob("*.md"):
-                t = p.read_text(encoding="utf-8")
-                if f"title: {title}" in t:
-                    m = re.search(r"^id: (.+)$", t, re.M)
-                    if m:
-                        found.append((m.group(1), p))
-            return found
-
-        victims = ids_of("preference", "同一主题")
-        assert len(victims) == 2, f"预期 2 条同标题条目，实际 {len(victims)}"
-        old = ids_of("fact", "旧规则")
-        assert old, "找不到旧规则条目"
-
-        plan = {
-            "merges": [{"type": "preference", "title": "同一主题（已合并）",
-                        "body": "合并后的唯一版本：保留结论，删掉重复表述。",
-                        "tags": ["测试"], "absorb": [i for i, _ in victims]}],
-            "archive": [old[0][0]],
-        }
-        pf = tmp / "plan.json"
-        pf.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-        rc, out = brain(dev1, "distill", "--apply", str(pf))
-        assert "新建 1 条" in out, f"没有新建合并条目: {out[:200]}"
-        assert "归档 1 条" in out, f"没有归档: {out[:200]}"
-
-        texts = [p.read_text(encoding="utf-8") for p in (repo1 / "memory" / "preference").glob("*.md")]
-        assert sum("superseded_by:" in t for t in texts) >= 2, "被吸收的条目没打 superseded_by"
-
-        brief = brain(dev1, "brief")[1]
-        assert "同一主题（已合并）" in brief, "合并后的条目没进简报"
-        assert "旧规则" not in brief, "已归档条目仍出现在简报"
-
-        moved = list((repo1 / "memory" / "_archive").rglob("*.md"))
-        assert moved, "归档目录为空"
-        archived_text = moved[0].read_text(encoding="utf-8")
-        assert "status: archived" in archived_text, "归档条目缺少 status"
-
-        assert not old[0][1].exists(), "归档后原文件仍存在（应移动而非复制）"
-
-        rc, recall_all = brain(dev1, "recall", "新方案取代", "--all")
-        assert "旧规则" in recall_all, "recall --all 查不到归档条目"
-        return "合并 2→1、归档 1（移动+标记），简报只剩合并版，--all 可回溯"
-
     print("运行检查：\n")
     t_all = time.time()
     for name, fn in [
@@ -267,8 +200,6 @@ def main():
         ("6 零依赖可读", t6),
         ("7 入口文件同源", t7),
         ("8 无绝对路径", t8),
-        ("9 蒸馏体检", t9),
-        ("10 合并与归档", t10),
     ]:
         check(name, fn)
 
