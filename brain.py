@@ -260,6 +260,12 @@ def cmd_init(a):
     if not gi.exists():
         write_text(gi, "# 本地产物\n.cache/\n__pycache__/\n*.tmp\n.DS_Store\n")
 
+    # 固定 LF：Windows 的 core.autocrlf=true 会把检出文件转成 CRLF，
+    # 导致同一份记忆在不同系统上字节不一致、diff 全是噪音。
+    ga = target / ".gitattributes"
+    if not ga.exists():
+        write_text(ga, "* text=auto eol=lf\n")
+
     cfg = load_config() or {}
     cfg.update({
         "data_repo": str(target.resolve()),
@@ -283,8 +289,27 @@ def cmd_init(a):
             "source": cfg["device"],
         }, "我是谁、做什么、长期目标、必须遵守的硬规则。\n（改这一条：直接编辑本文件，或 brain add --type identity）\n"))
 
+    # 把初始骨架提交并推到远端：
+    # 否则第二台设备 clone 到的是空库，各自产生无关根提交，历史永远合不起来。
     if (target / ".git").exists():
         ensure_git_identity(target)
+        run_git(["add", "-A"], cwd=target)
+        if run_git(["status", "--porcelain"], cwd=target)[1]:
+            run_git(["commit", "-m", "init: ai-brain skeleton"], cwd=target)
+        if run_git(["remote"], cwd=target)[1]:
+            branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=target)[1] or "main"
+            c, out, _ = run_git(["ls-remote", "--heads", "origin", branch], cwd=target, timeout=30)
+            if c == 0 and out:
+                c2, _, err = run_git(["pull", "--rebase", "--autostash", "--no-edit"],
+                                     cwd=target, timeout=120)
+                if c2 != 0:
+                    info(f"拉取失败（离线可继续）: {err.splitlines()[-1] if err else ''}")
+                run_git(["push"], cwd=target, timeout=120)
+            else:
+                c2, _, err = run_git(["push", "-u", "origin", branch], cwd=target, timeout=120)
+                if c2 != 0:
+                    info(f"推送失败（离线可继续，稍后 brain sync）: "
+                         f"{err.splitlines()[-1] if err else ''}")
 
     info(f"设备名: {cfg['device']}")
     info(f"配置: {CONFIG_PATH}")
@@ -317,7 +342,13 @@ def cmd_add(a):
     write_text(p, dump_front(meta, body))
     info(f"已写入 {meta['id']} → {p.relative_to(data_repo())}")
     if not a.no_commit:
-        cmd_sync(argparse.Namespace(message=f"add: {a.title or meta['id']}", no_pull=True, no_push=True))
+        repo = data_repo()
+        cmd_sync(argparse.Namespace(message=f"add: {a.title or meta['id']}",
+                                    no_pull=True, no_push=True, force=False))
+        # 尽力推送：成功则其他设备立刻可见；失败（离线 / 远端已前进）静默跳过，
+        # 由下一次 brain sync 的 pull --rebase 收敛。不阻塞写入。
+        if run_git(["remote"], cwd=repo)[1]:
+            run_git(["push"], cwd=repo, timeout=15)
 
 
 # ---------------------------------------------------------------- 命令: recall
@@ -510,6 +541,35 @@ def cmd_compile(a):
 
 # ---------------------------------------------------------------- 命令: sync
 
+def guard_deletions(repo, force=False):
+    """拦截批量删除。返回 True 表示放行。
+
+    动机：AI 一旦"误操作删库"，靠 git 历史能救回来，但前提是别先把它推上去、
+    又覆盖了别人的历史。所以在提交前先拦一次，让人确认。
+    """
+    code, out, _ = run_git(["diff", "--cached", "--name-status", "--", "memory"], cwd=repo)
+    if code != 0 or not out:
+        return True
+    deleted = [l.split("\t", 1)[-1] for l in out.splitlines() if l.startswith("D")]
+    if not deleted:
+        return True
+    tracked = run_git(["ls-tree", "-r", "--name-only", "HEAD", "--", "memory"], cwd=repo)[1]
+    total = len(tracked.splitlines()) or 0
+    ratio = len(deleted) / total if total else 0.0
+    if force:
+        info(f"已放行批量删除：{len(deleted)} 条（--force）")
+        return True
+    if len(deleted) >= 3 or (total and ratio >= 0.3):
+        info(f"已拦截：本次将删除 {len(deleted)}/{total} 条记忆（{ratio:.0%}）")
+        for d in deleted[:10]:
+            info(f"  - {d}")
+        if len(deleted) > 10:
+            info(f"  … 另 {len(deleted) - 10} 条")
+        info("确认无误请加 --force 重跑；只想撤销请用 git checkout -- memory/")
+        return False
+    return True
+
+
 def cmd_sync(a):
     cfg = require_config()
     repo = Path(cfg["data_repo"])
@@ -520,6 +580,10 @@ def cmd_sync(a):
 
     run_git(["add", "-A"], cwd=repo)
     ensure_git_identity(repo)
+    if not guard_deletions(repo, force=getattr(a, "force", False)):
+        run_git(["reset"], cwd=repo)  # 撤回暂存，保持工作区原样
+        sys.exit(3)
+
     code, out, _ = run_git(["status", "--porcelain"], cwd=repo)
     if out:
         msg = a.message or f"sync: {cfg.get('device', HOST)} {now_iso()}"
@@ -631,7 +695,13 @@ def cmd_hook(a):
         cmd_brief(argparse.Namespace(max_chars=6000, project=None))
     elif a.phase == "stop":
         if run_git(["status", "--porcelain"], cwd=repo)[1]:
-            cmd_sync(argparse.Namespace(message=f"auto: {a.tool}@{cfg.get('device', HOST)}", no_pull=True, no_push=False))
+            try:
+                cmd_sync(argparse.Namespace(
+                    message=f"auto: {a.tool}@{cfg.get('device', HOST)}",
+                    no_pull=True, no_push=False, force=False))
+            except SystemExit:
+                # 批量删除被拦截时不要让钩子整体失败：原因已打印，交给人工确认
+                pass
 
 
 # ---------------------------------------------------------------- main
@@ -683,6 +753,7 @@ def build_parser():
     s.add_argument("-m", "--message", default="")
     s.add_argument("--no-pull", action="store_true")
     s.add_argument("--no-push", action="store_true")
+    s.add_argument("--force", action="store_true", help="放行批量删除（默认拦截 ≥3 条或 ≥30% 的删除）")
     s.set_defaults(func=cmd_sync)
 
     s = sub.add_parser("status", help="查看状态")

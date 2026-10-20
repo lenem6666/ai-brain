@@ -41,11 +41,20 @@
 
 ## 实测记录（v0.1）
 
+`scripts/validate.py` 覆盖前 6 行，8/8 通过（约 19 秒）。完整报告见
+[VIDEO-VALIDATION.md](VIDEO-VALIDATION.md)。
+
 | 场景 | 结果 |
 | --- | --- |
 | 设备 1 写入 → 设备 2 全新 clone → `brief` | 条目完整可见 |
 | 两台设备各自离线新增 → 先后 `sync` | `pull --rebase` 自动合并，无冲突 |
+| 改坏一条 → 提交 → `checkout HEAD~1` | 正文逐字恢复 |
+| 删除 3/4 条后 `sync` | 拦截，退出码 3；`--force` 放行 |
+| 不调用 `brain.py`，纯标准库解析 `memory/` | 条目数与 `brain status` 一致 |
+| 6 个客户端入口文件 | 正文 sha 一致（同源编译） |
 | 首次推送（远端无分支） | 自动改用 `push -u origin main` |
+| `init` 后立即推送骨架 | 第二台设备 clone 即有共同根提交，不再产生无关历史 |
 | 未配置全局 git 身份 | 自动设置仓库级兜底身份，`commit` 成功 |
+| Windows `core.autocrlf=true` | 记忆仓库固定 `eol=lf`，跨系统字节一致 |
 | MCP `initialize` / `tools/list` / `tools/call` | 均返回合法 JSON-RPC 结果 |
 | 简报超字符预算 | 尾部截断并提示用 `recall` 取细节 |
