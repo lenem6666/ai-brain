@@ -107,7 +107,36 @@ python D:\ai-brain\scripts\migrate_obsidian.py --src "D:\你的Vault" --dst D:\a
 
 按 `##` 小节拆成一条一文件，旧的机制类条目会自动标注「历史，已取代」，不会污染简报。
 
-## 第二台电脑怎么装
+## 换机怎么装
+
+### 方式 A：只装 Skill（推荐）
+
+新电脑装好 WorkBuddy 并登录账号，执行：
+
+```powershell
+$d = "$env:USERPROFILE\.workbuddy\skills"
+git clone --depth 1 https://github.com/lenem6666/ai-brain.git $env:TEMP\aib
+New-Item -ItemType Directory -Force -Path $d | Out-Null
+Copy-Item -Recurse -Force "$env:TEMP\aib\skill\ai-brain-setup" $d
+Remove-Item -Recurse -Force $env:TEMP\aib
+```
+
+或用一键脚本（自动下载 zip，直连失败时自动试本机代理 10809）：
+
+```powershell
+iwr https://raw.githubusercontent.com/lenem6666/ai-brain/main/scripts/install-skill.ps1 -OutFile $env:TEMP\is.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\is.ps1
+```
+
+重启 WorkBuddy，新对话里说「恢复我的记忆」。Skill 会自己完成：装程序（直接复用 WorkBuddy 自带的
+Python，不额外装运行时）→ 拉私有记忆库 → 部署 `CLAUDE.md` / `AGENTS.md` / `SKILL.md` 等入口 → 打印简报。
+之后每次新会话先跑一次自检（幂等，已就绪就只检查）。
+
+**唯一要人做的一步**：私有库第一次拉取需要一次 GitHub 授权。脚本会优先复用 `gh auth token`、
+系统凭据管理器或 `BRAIN_TOKEN`，都没有就明确提示你去 `git clone` 登录一次。
+这一步和 WorkBuddy 账号无关——记忆存在 GitHub 私有仓库里，WorkBuddy 账号本身不携带记忆内容。
+
+### 方式 B：手动装（可精确控制）
 
 前提只有两个：**装 Git**，**这台机器能访问 GitHub**（私有库要登录一次）。
 
