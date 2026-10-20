@@ -16,6 +16,7 @@ brain.py — 跨设备、跨 AI 的「第二大脑」记忆层。
   sync      提交 + 拉取 + 推送（跨设备同步）
   status    查看状态
   doctor    环境自检
+  distill   记忆体检 + 蒸馏（合并重复、提炼日志、归档过时）
   hook      start / stop，供各工具钩子调用
 
 设计约束:
@@ -26,16 +27,19 @@ brain.py — 跨设备、跨 AI 的「第二大脑」记忆层。
 """
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # ---------------------------------------------------------------- 常量
 
@@ -174,13 +178,30 @@ def dump_front(meta, body):
     return "\n".join(lines) + "\n\n" + body.strip() + "\n"
 
 
-def load_entries():
+ARCHIVE = "_archive"          # 归档目录：memory/_archive/...，默认不进简报、不参与检索
+RETIRED_TAGS = ("已废止", "已合并")
+
+
+def is_archived(meta):
+    return bool(meta.get("status") == "archived"
+                or ARCHIVE in Path(str(meta.get("_path", ""))).parts
+                or meta.get("superseded_by"))
+
+
+def is_retired(meta):
+    """不该进简报的条目：已被取代、已合并、已归档。仍可 recall --all 查到。"""
+    return is_archived(meta) or any(t in (meta.get("tags") or []) for t in RETIRED_TAGS)
+
+
+def load_entries(include_archived=False):
     md = memory_dir()
     out = []
     if not md.exists():
         return out
     for p in sorted(md.rglob("*.md")):
         if p.name.startswith("."):
+            continue
+        if not include_archived and ARCHIVE in p.parts:
             continue
         try:
             meta, body = parse_front(read_text(p))
@@ -214,7 +235,11 @@ def slugify(title):
 
 
 def short_id(title):
-    return hashlib.sha1(f"{title}{now_iso()}".encode()).hexdigest()[:6]
+    # 只用「标题 + 秒级时间」会在同一秒内写出同名文件、静默覆盖上一条，
+    # 因此掺入纳秒与进程号，保证连续写入也不撞名。
+    return hashlib.sha1(
+        f"{title}{now_iso()}{time.time_ns()}{os.getpid()}".encode()
+    ).hexdigest()[:6]
 
 
 def age_days(meta):
@@ -339,6 +364,12 @@ def cmd_add(a):
     if a.confidence:
         meta["confidence"] = a.confidence
     p = memory_dir() / a.type / f"{slugify(a.title or a.type)}-{sid}.md"
+    for _ in range(5):            # 极端情况（同秒同名）兜底，绝不覆盖已有条目
+        if not p.exists():
+            break
+        sid = short_id(a.title)
+        meta["id"] = f"{a.type}-{today().replace('-', '')}-{sid}"
+        p = memory_dir() / a.type / f"{slugify(a.title or a.type)}-{sid}.md"
     write_text(p, dump_front(meta, body))
     info(f"已写入 {meta['id']} → {p.relative_to(data_repo())}")
     if not a.no_commit:
@@ -376,10 +407,13 @@ def score(meta, toks, q):
 
 def cmd_recall(a):
     require_config()
-    entries = load_entries()
+    entries = load_entries(include_archived=getattr(a, "all", False))
     if not entries:
         info("记忆为空")
         return
+    if not getattr(a, "all", False):
+        # 已归档默认不参与检索；--all 才翻旧账
+        entries = [m for m in entries if ARCHIVE not in Path(str(m["_path"])).parts]
     toks = tokenize(a.query)
     ranked = sorted(((score(m, toks, a.query), m) for m in entries), key=lambda x: -x[0])
     hits = [(s, m) for s, m in ranked if s >= 1.0][:a.k]
@@ -432,10 +466,9 @@ def cmd_brief(a):
         parts.extend(chunk)
 
     def by_type(t):
-        # 「已废止」= 被后来决策取代的历史机制，仍可 recall 查到，但不进简报，
-        # 否则 AI 会照着过时规则执行。
-        return [m for m in entries
-                if m["_type"] == t and "已废止" not in (m.get("tags") or [])]
+        # 已废止 / 已合并 / 已归档的条目不进简报，否则 AI 会照着过时规则执行；
+        # 它们仍留在仓库里，需要时用 recall 查得到。
+        return [m for m in entries if m["_type"] == t and not is_retired(m)]
 
     section("身份（必须遵守）", by_type("identity"), with_body=True, limit=3, body_lines=14)
     section("长期偏好与硬规则", [m for m in by_type("preference")
@@ -492,6 +525,16 @@ CORE = """<!-- 本文件由 ai-brain 自动生成，请勿手改；改记忆请�
 1. 写日志：`brain add --type journal --title "<一句话主题>" --body "<做了什么 / 结论 / 待办>"`
 2. 同步：`brain sync -m "session: <主题>"`（自动提交、拉取、推送）
 
+## 三·补、定期蒸馏（记忆 >80 条或每月一次）
+
+日志是原料，不是结论。长期不蒸馏，简报会被重复与过时条目稀释。
+
+1. `brain distill --task` 生成体检报告与任务包（路径会打印出来）
+2. **你**读任务包，按其中的规则产出 `distill-plan.json`（只输出计划，不改文件）
+3. `brain distill --apply distill-plan.json` 执行合并/归档，然后 `python scripts/refresh.py`
+
+硬约束：不许臆造，数字/路径/命令/硬规则原样保留；归档只针对已废止、已被取代或纯日志，不得归档还生效的偏好。
+
 ## 四、写什么、不写什么
 
 写：稳定偏好与禁忌、身份事实、项目背景、决策及其理由（含被否掉的方案）、可复用方法、用户的原话纠正。
@@ -520,6 +563,305 @@ TARGETS = {
                   "---\nname: second-brain\ndescription: 用户的跨设备长期记忆层。当需要了解用户偏好、历史决策、项目背景，或需要记录新的稳定事实时使用。\n---\n\n"),
     "chatgpt":   ("custom-instructions.md", ""),
 }
+
+
+# ---------------------------------------------------------------- 命令: distill
+
+def _squash(s):
+    """去掉排版符号与空白，只留语义字符，用于相似度与长度统计。"""
+    return re.sub(r"[\s*#`>\-—·、,，。.;；:：!！?？()（）\[\]【】\"'“”‘’/\\]+", "", s)
+
+
+def _jaccard(a, b):
+    A, B = tokenize(a), tokenize(b)
+    if not A or not B:
+        return 0.0
+    return len(A & B) / len(A | B)
+
+
+def distill_groups(entries, days=30, threshold=0.72):
+    """找出该合并 / 该提炼 / 该归档的候选。只做分析，不写盘。"""
+    groups = []
+    used = set()
+
+    # 1) 同标题：一条记忆只讲一件事，标题相同基本就是重复或演进关系
+    by_title = {}
+    for m in entries:
+        key = re.sub(r"[\s　]+", "", title_of(m)).lower()
+        if len(key) < 4:
+            continue
+        by_title.setdefault(key, []).append(m)
+    for _, ms in by_title.items():
+        if len(ms) > 1:
+            groups.append({"kind": "same-title",
+                           "reason": f"标题相同：{title_of(ms[0])}（{len(ms)} 条）",
+                           "items": ms})
+            used.update(m["id"] for m in ms)
+
+    # 2) 正文高度重叠：先按词集快速筛，再算序列相似度，避免 O(n²) 直接上 difflib
+    cand = [m for m in entries
+            if m["id"] not in used and len(_squash(m["_body"])) >= 60]
+    for i in range(len(cand)):
+        for j in range(i + 1, len(cand)):
+            a, b = cand[i], cand[j]
+            if a["_type"] != b["_type"] or a["id"] in used or b["id"] in used:
+                continue
+            if _jaccard(a["_body"], b["_body"]) < 0.45:
+                continue
+            r = difflib.SequenceMatcher(None, _squash(a["_body"])[:900],
+                                        _squash(b["_body"])[:900]).ratio()
+            if r >= threshold:
+                groups.append({"kind": "near-dup",
+                               "reason": f"正文相似度 {r:.0%}",
+                               "items": [a, b]})
+                used.update((a["id"], b["id"]))
+
+    # 3) 老日志：日志是原料，不是结论，放着不提炼就是噪音
+    olds = [m for m in entries if m["_type"] == "journal" and age_days(m) >= days]
+    if olds:
+        groups.append({"kind": "stale-journal",
+                       "reason": f"{len(olds)} 条日志超过 {days} 天未提炼",
+                       "items": olds})
+
+    # 4) 已废止 / 已合并：不进简报但仍在仓库，挪进 _archive 减少噪音
+    retired = [m for m in entries
+               if m["id"] not in used
+               and any(t in (m.get("tags") or []) for t in RETIRED_TAGS)]
+    if retired:
+        groups.append({"kind": "retired",
+                       "reason": f"{len(retired)} 条已废止/已合并，建议归档",
+                       "items": retired})
+
+    # 5) 过短：独立存在没有信息量
+    thin = [m for m in entries
+            if m["id"] not in used and m["_type"] != "identity"
+            and len(_squash(m["_body"])) < 15]
+    if thin:
+        groups.append({"kind": "too-thin",
+                       "reason": f"{len(thin)} 条正文不足 15 字，补全或归档",
+                       "items": thin})
+    return groups
+
+
+def render_report(groups, entries, total, journal_chars):
+    lines = [f"# 记忆体检报告 · {today()}", "",
+             f"- 条目 {len(entries)} 条，正文合计 {total} 字",
+             f"- 其中日志 {journal_chars} 字（占 {journal_chars * 100 // max(1, total)}%）",
+             f"- 发现 {len(groups)} 组待处理", ""]
+    for i, g in enumerate(groups, 1):
+        lines.append(f"## {i}. {g['kind']} · {g['reason']}")
+        for m in g["items"]:
+            lines.append(f"- `{m['id']}` [{m['_type']}] {title_of(m)}"
+                         f"（{len(_squash(m['_body']))} 字，{age_days(m):.0f} 天前）")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_task(groups, entries):
+    lines = [f"# 记忆蒸馏任务 · {today()}", "",
+             "你在帮用户整理长期记忆库。目标：把重复、过时、过长的条目，合并成更少更准的条目。",
+             "",
+             "## 硬性规则",
+             "",
+             "1. **不许臆造**。只能使用现有条目里出现过的信息；拿不准就保留原文。",
+             "2. **数字、路径、命令、硬规则必须原样保留**，这些是用户真正要复用的东西。",
+             "3. 合并后每条正文 ≤ 400 字，一条只讲一件事；删掉寒暄、重复、无信息量的过渡句。",
+             "4. 日志是原料不是结论：提炼成 `preference` / `decision` / `skill` / `fact`，不要留 `journal`。",
+             "5. 只输出计划，不改文件。",
+             "",
+             "## 输出格式（保存为 distill-plan.json，UTF-8）",
+             "",
+             "```json",
+             "{",
+             '  "merges": [',
+             '    {"type": "preference", "title": "合并后的标题", "body": "合并后的正文",',
+             '     "tags": ["标签"], "absorb": ["要吸收掉的条目 id", "..."],',
+             '     "keep": "（可选）保留哪条原 id，不填则新建一条"}',
+             "  ],",
+             '  "update": [{"id": "要改写的 id", "title": "新标题（可省略）", "body": "改写后的正文"}],',
+             '  "archive": ["要归档的 id", "..."]',
+             "}",
+             "```",
+             "",
+             "规则：`absorb` 里列出的条目会被标记为「已合并」，不进简报，但保留可追溯；",
+             "`archive` 用于已废止、已被新方案取代、或纯日志类条目。**不要归档还生效的偏好与硬规则。**",
+             "", "---", "", "## 候选条目", ""]
+    for i, g in enumerate(groups, 1):
+        lines.append(f"### 组 {i} · {g['kind']} · {g['reason']}")
+        lines.append("")
+        for m in g["items"]:
+            body = m["_body"].strip().replace("\n", " ")
+            lines.append(f"- `{m['id']}` [{m['_type']}] **{title_of(m)}**"
+                         f"（{len(_squash(m['_body']))} 字）  ")
+            lines.append(f"  {body[:260]}{'…' if len(body) > 260 else ''}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _write_meta(path, meta, body):
+    write_text(path, dump_front(meta, body))
+
+
+def apply_plan(path, repo):
+    """执行蒸馏计划：合并 / 改写 / 归档。不删除任何正文，只改写与移动。"""
+    if not path.exists():
+        die(f"计划文件不存在: {path}")
+    try:
+        plan = json.loads(read_text(path))
+    except Exception as e:
+        die(f"计划文件不是合法 JSON: {e}")
+
+    entries = {m["id"]: m for m in load_entries(include_archived=True)}
+    mem = memory_dir()
+    created, updated, merged, archived, missing = [], [], [], [], []
+
+    def meta_of(m):
+        return {k: v for k, v in m.items() if not k.startswith("_")}
+
+    # ---- 改写
+    for u in plan.get("update", []) or []:
+        m = entries.get(u.get("id"))
+        if not m:
+            missing.append(u.get("id"))
+            continue
+        meta = meta_of(m)
+        if u.get("title"):
+            meta["title"] = u["title"]
+        meta["updated"] = today()
+        _write_meta(m["_path"], meta, u.get("body") or m["_body"])
+        updated.append(m["id"])
+
+    # ---- 合并
+    for g in plan.get("merges", []) or []:
+        absorb_ids = [x for x in (g.get("absorb") or []) if x in entries]
+        if not absorb_ids:
+            missing.extend(g.get("absorb") or [])
+            continue
+        src = [entries[x] for x in absorb_ids]
+        mtype = g.get("type") or src[0]["_type"]
+        title = g.get("title") or title_of(src[0])
+        body = (g.get("body") or "").strip()
+        if not body:
+            missing.append(f"merge:{title}(正文为空)")
+            continue
+        tags = g.get("tags") or []
+        tags = [tags] if isinstance(tags, str) else list(tags)
+        keep = g.get("keep")
+
+        if keep and keep in entries:
+            m = entries[keep]
+            meta = meta_of(m)
+            meta["title"] = title
+            meta["type"] = mtype
+            meta["tags"] = tags or meta.get("tags") or []
+            meta["updated"] = today()
+            _write_meta(m["_path"], meta, body)
+            new_id = keep
+            updated.append(keep)
+        else:
+            sid = short_id(title)
+            new_id = f"{mtype}-{today().replace('-', '')}-{sid}"
+            dest = mem / mtype / f"{slugify(title)}-{sid}.md"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _write_meta(dest, {
+                "id": new_id, "type": mtype, "scope": "global",
+                "tags": tags or ["蒸馏"], "created": now_iso(),
+                "source": f"distill@{load_config().get('device', HOST)}",
+                "title": title, "confidence": "high",
+            }, body)
+            created.append(new_id)
+
+        for m in src:
+            if m["id"] == new_id:
+                continue
+            meta = meta_of(m)
+            t = list(meta.get("tags") or [])
+            if "已合并" not in t:
+                t.append("已合并")
+            meta["tags"] = t
+            meta["superseded_by"] = new_id
+            _write_meta(m["_path"], meta, m["_body"])
+            merged.append(m["id"])
+
+    # ---- 归档：移到 memory/_archive/<type>/，保留正文与 git 历史
+    for eid in plan.get("archive", []) or []:
+        m = entries.get(eid)
+        if not m:
+            missing.append(eid)
+            continue
+        if ARCHIVE in m["_path"].parts:
+            continue
+        meta = meta_of(m)
+        meta["status"] = "archived"
+        meta["archived"] = today()
+        dest = mem / ARCHIVE / m["_type"] / m["_path"].name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _write_meta(dest, meta, m["_body"])
+        m["_path"].unlink()
+        archived.append(eid)
+
+    print(f"新建 {len(created)} 条，改写 {len(updated)} 条，标记已合并 {len(merged)} 条，归档 {len(archived)} 条")
+    if missing:
+        print(f"跳过 {len(missing)} 个无法处理的项：{', '.join(str(x) for x in missing[:6])}")
+    if not (created or updated or merged or archived):
+        info("没有任何改动")
+        return
+
+    # 归档是计划内的批量移动，属于有意操作，这里放行误删拦截
+    cmd_sync(argparse.Namespace(message=f"distill: 合并 {len(merged)} / 归档 {len(archived)}",
+                                no_pull=True, no_push=False, force=True))
+    print("\n记得刷新入口文件，否则 AI 读到的还是旧快照：")
+    print("  python scripts/refresh.py")
+
+
+def cmd_distill(a):
+    cfg = require_config()
+    repo = Path(cfg["data_repo"])
+    if a.apply:
+        return apply_plan(Path(a.apply), repo)
+
+    entries = load_entries()
+    groups = distill_groups(entries, days=a.days, threshold=a.threshold)
+    total = sum(len(_squash(m["_body"])) for m in entries)
+    journal_chars = sum(len(_squash(m["_body"])) for m in entries if m["_type"] == "journal")
+
+    if a.json:
+        print(json.dumps([{
+            "kind": g["kind"], "reason": g["reason"],
+            "items": [{"id": m["id"], "type": m["_type"], "title": title_of(m),
+                       "chars": len(_squash(m["_body"]))} for m in g["items"]],
+        } for g in groups], ensure_ascii=False, indent=2))
+        return
+
+    print(f"记忆 {len(entries)} 条 / 正文 {total} 字（日志占 {journal_chars} 字）")
+    if not groups:
+        info("没有需要蒸馏的内容")
+        return
+    for i, g in enumerate(groups, 1):
+        print(f"\n[{i}] {g['kind']} · {g['reason']}")
+        for m in g["items"][:8]:
+            print(f"    - {m['id']}  [{m['_type']}] {title_of(m)}"
+                  f"（{len(_squash(m['_body']))} 字，{age_days(m):.0f} 天前）")
+        if len(g["items"]) > 8:
+            print(f"    … 另 {len(g['items']) - 8} 条")
+
+    out_dir = repo / "distill"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    gi = out_dir / ".gitignore"
+    if not gi.exists():
+        write_text(gi, "# 报告与任务包属于临时产物，不进记忆库\n*\n")
+    stamp = today().replace("-", "")
+    if a.task:
+        p = out_dir / f"task-{stamp}.md"
+        write_text(p, render_task(groups, entries))
+        info(f"任务包 → {p}")
+    if a.report or not a.task:
+        p = out_dir / f"report-{stamp}.md"
+        write_text(p, render_report(groups, entries, total, journal_chars))
+        info(f"报告 → {p}")
+
+    print("\n下一步：让 AI 读任务包产出 distill-plan.json，然后执行")
+    print("  brain distill --apply distill-plan.json")
 
 
 def cmd_compile(a):
@@ -636,6 +978,12 @@ def cmd_status(a):
         n = len([m for m in entries if m["_type"] == t])
         if n:
             print(f"  - {t:11s} {n:3d}  {TYPE_LABEL[t]}")
+    retired = [m for m in entries if any(t in (m.get("tags") or []) for t in RETIRED_TAGS)]
+    if retired:
+        print(f"已合并/废止 : {len(retired)} 条（不进简报，recall 可查）")
+    arch = len(load_entries(include_archived=True)) - len(entries)
+    if arch:
+        print(f"已归档   : {arch} 条（memory/_archive，需 recall --all）")
     code, out, _ = run_git(["log", "-1", "--pretty=%h %ad %s", "--date=short"], cwd=repo)
     print(f"最新提交 : {out or '（无）'}")
     dirty = run_git(["status", "--porcelain"], cwd=repo)[1]
@@ -741,6 +1089,7 @@ def build_parser():
     s.add_argument("-k", type=int, default=8)
     s.add_argument("--lines", type=int, default=6)
     s.add_argument("--json", action="store_true")
+    s.add_argument("--all", action="store_true", help="连已归档的旧条目一起搜")
     s.set_defaults(func=cmd_recall)
 
     s = sub.add_parser("brief", help="输出启动简报")
@@ -762,6 +1111,15 @@ def build_parser():
     s.add_argument("--no-push", action="store_true")
     s.add_argument("--force", action="store_true", help="放行批量删除（默认拦截 ≥3 条或 ≥30% 的删除）")
     s.set_defaults(func=cmd_sync)
+
+    s = sub.add_parser("distill", help="记忆体检：找重复/过时/过长，生成蒸馏任务包")
+    s.add_argument("--days", type=int, default=30, help="日志超过多少天算待提炼")
+    s.add_argument("--threshold", type=float, default=0.72, help="正文相似度阈值")
+    s.add_argument("--task", action="store_true", help="生成给 AI 的任务包")
+    s.add_argument("--report", action="store_true", help="只出体检报告")
+    s.add_argument("--json", action="store_true", help="机器可读输出")
+    s.add_argument("--apply", help="执行蒸馏计划 JSON")
+    s.set_defaults(func=cmd_distill)
 
     s = sub.add_parser("status", help="查看状态")
     s.set_defaults(func=cmd_status)

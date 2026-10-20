@@ -198,12 +198,15 @@ confidence: high
 brain init --repo <url> --device <名字>   # 绑定/换机
 brain brief [--project X] [--max-chars N] # 启动简报
 brain recall "<关键词>" [-k 8] [--json]   # 检索
+brain recall "<关键词>" --all             # 连已归档的旧条目一起搜
 brain add --type T --title "..." --body "..." [--tags a,b] [--scope X]
 brain sync [-m "说明"]                    # 提交 + 拉取 + 推送
 brain sync --force                        # 放行批量删除（默认 ≥3 条或 ≥30% 会被拦）
 brain status                              # 统计与同步状态
 brain doctor                              # 环境自检
 brain compile --target all                # 生成各工具入口文件
+brain distill [--task] [--report] [--json] # 记忆体检：重复/过时/过长
+brain distill --apply plan.json           # 执行合并、提炼、归档
 brain hook start|stop --tool claude       # 钩子入口
 ```
 
@@ -276,7 +279,7 @@ git -C ~/.ai-brain/data log --oneline                 # 看全部历史
 ## 路线图
 
 - [x] v0.1 文件记忆 + git 同步 + 6 种工具接入 + MCP + 8 项可执行验收
-- [ ] v0.2 `brain distill`：把 journal 蒸馏成 preference / decision（去重、提炼、归档）
+- [x] v0.2 `brain distill`：体检（同标题 / 近似重复 / 老日志 / 已废止 / 过短）+ 计划执行（合并、改写、归档）
 - [ ] v0.3 可选向量检索（本地 sqlite + 轻量嵌入），保持无网络依赖
 - [ ] v0.4 记忆健康度报告：过期条目、互相矛盾的偏好、从未被检索的死记忆
 - [ ] v0.5 加密同步（git-crypt 集成 + 单条目加密选项）
@@ -299,6 +302,7 @@ ai-brain/
 ├── docs/
 │   ├── ARCHITECTURE.md      分层、数据模型、生命周期
 │   ├── CAPABILITY-MATRIX.md 各工具能力与降级策略
+│   ├── DISTILL.md           记忆蒸馏：五类候选、计划格式、安全边界
 │   ├── VIDEO-VALIDATION.md  对"GitHub 第二大脑"说法的实测对照
 │   ├── SECURITY.md          隐私边界与加密
 │   └── MCP.md               MCP 客户端配置示例

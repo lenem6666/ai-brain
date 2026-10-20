@@ -24,6 +24,7 @@ description: 用户的跨设备、跨 AI 的长期记忆层（ai-brain）。当�
 | 用户做出有理由的决策 | `brain add --type decision ...`（含被否掉的方案） |
 | 拿到可复用流程 | `brain add --type skill ...` |
 | 会话结束 | `brain add --type journal ...` + `brain sync` |
+| 记忆超过 80 条，或每月一次 | `brain distill --task` → 读任务包产出 `distill-plan.json` → `brain distill --apply` |
 
 ## 命令
 
@@ -33,6 +34,8 @@ brain brief [--project <项目名>]                    # 启动简报（有字�
 brain recall "<关键词>" [-k 8] [--json]             # 检索
 brain add --type <类型> --title "..." --body "..." [--tags a,b] [--scope global]
 brain sync [-m "说明"]                              # 提交 + 拉取 + 推送
+brain distill [--task] [--report] [--json]           # 记忆体检：重复/过时/过长
+brain distill --apply <plan.json>                    # 执行合并、提炼、归档
 brain status                                        # 条目统计与同步状态
 brain doctor                                        # 环境自检
 ```
