@@ -276,9 +276,46 @@ brain compile --target all                # 生成各工具入口文件
 brain distill [--task] [--report] [--json] # 记忆体检：重复/过时/过长
 brain distill --apply plan.json           # 执行合并、提炼、归档
 brain hook start|stop --tool claude       # 钩子入口
+brain trail [--full] [--dry-run] [--no-files] # 导出 WorkBuddy 会话历史与产物清单
 ```
 
 零依赖，纯标准库，`python3 brain.py <命令>` 与 `brain <命令>` 等价。
+
+## 任务历史怎么跨设备
+
+WorkBuddy 登录同一账号**只同步**账号设置、Memory 和连接器配置；
+任务列表、对话记录、产物文件都留在本机（官方原文：
+"WorkBuddy does not currently transfer task outputs between devices"）。
+2026-08 那次"多端同步"是 PC ↔ 手机/小程序的远程查看，前提是电脑开机在线，不是 PC↔PC。
+
+要把历史带过去，用 `brain trail`：
+
+```bash
+brain trail            # 增量导出（默认）
+brain trail --full     # 全量重建
+brain trail --dry-run  # 只统计，不写文件
+```
+
+它做两件事：
+
+| 步骤 | 产物 | 说明 |
+|---|---|---|
+| 导出会话 | `trail/<年-月>/<日期>-<标题>-<id>.md` | 76 个会话 110 MB 原始 jsonl → 约 11 MB Markdown |
+| 同步文档 | `trail/files/<项目>/…` | docx/xlsx/pptx/pdf/md/csv，实测 93 份 7.7 MB |
+| 产物清单 | `trail/artifacts.md` | 媒体文件（mp4/png 等）只登记不搬，实测 327 个 1116 MB |
+
+索引在 `trail/index.md`，按月份列出全部会话，点开即读。
+
+三点实现细节：
+
+1. **只留对话正文**。jsonl 里 99.5% 是工具输出与 provider 元数据，解析时丢弃，所以 110 MB 能压到 11 MB。
+2. **用户提问要单独抽取**。提问多数包在 `<system-reminder>` 里，真实问题在 `<user_query>` 中；
+   早期实现按 `^<system-reminder` 整条丢弃，476 轮提问只剩 11 轮，已修正。
+3. **排除中间产物**。隐藏目录（`.inv100` 之类）里是 `_audit.py`、`_chk.py` 等可再生脚本，
+   文档体积的 99% 集中在那里，不排除会把仓库撑到 280 MB。
+
+**边界**：第二台电脑的 WorkBuddy **界面里不会出现这些任务卡片**——任务列表由本地 sqlite 驱动，
+无法从外部注入。同步过去的是文件与内容：能打开、能全文搜索、能让 AI 读。
 
 ## 验证
 

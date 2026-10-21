@@ -104,7 +104,16 @@ def fresh_clone(remote, dest):
     rmtree(dest)
     p = sh(["git", "clone", "-q", str(remote), str(dest)])
     if p.returncode != 0:
-        raise AssertionError(f"clone 失败: {(p.stderr or '')[:200]}")
+        # git 全局配了代理但代理没启动时，先失败；改用直连再试一次（与 brain.py 同策略）
+        err = (p.stderr or "")
+        if "proxy" in err.lower():
+            rmtree(dest)
+            p = sh(["git", "-c", "http.https://github.com.proxy=", "-c", "http.proxy=",
+                    "clone", "-q", str(remote), str(dest)])
+            if p.returncode == 0:
+                return dest
+            err = (p.stderr or "")
+        raise AssertionError(f"clone 失败: {err[:200]}")
     return dest
 
 
@@ -455,6 +464,23 @@ def main():
         assert "第二大脑" in txt, "入口文件缺少协议正文"
         return "写入 → sync → CLAUDE.md 自动包含新条目（无需手工 refresh）"
 
+    def t20():
+        cfg = json.loads((REAL_HOME / "config.json").read_text(encoding="utf-8"))
+        trail = Path(cfg["data_repo"]) / "trail"
+        assert trail.exists(), "trail 目录不存在（历史未导出）"
+        man = json.loads((trail / ".manifest.json").read_text(encoding="utf-8"))
+        assert man, "trail 清单为空"
+        missing = [r["md"] for r in man.values() if r.get("md") and not (trail / r["md"]).exists()]
+        assert not missing, f"清单指向的会话文件缺失 {len(missing)} 个，例如 {missing[:2]}"
+        idx = (trail / "index.md").read_text(encoding="utf-8")
+        listed = len(re.findall(r"\]\(20\d\d-", idx))
+        assert listed == len(man), f"索引列出 {listed} 个，清单有 {len(man)} 个（不一致）"
+        am = trail / ".artifacts.json"
+        docs = json.loads(am.read_text(encoding="utf-8")) if am.exists() else {}
+        dangling = [k for k in docs if not (trail / "files" / k).exists()]
+        assert not dangling, f"产物清单指向的文件缺失 {len(dangling)} 个，例如 {dangling[:2]}"
+        return f"trail 自洽：{len(man)} 个会话 + {len(docs)} 份文档，索引无悬空引用"
+
     print("闭环检查：\n")
     tests = [
         ("1 双机基线可见", t1),
@@ -472,6 +498,7 @@ def main():
         ("13 MCP 协议", t13),
         ("14 钩子闭环", t14),
         ("19 同步后入口自动刷新", t19),
+        ("20 历史导出自洽", t20),
     ]
     if not QUICK:
         tests += [

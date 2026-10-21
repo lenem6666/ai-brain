@@ -14,6 +14,12 @@ if not defined GITDIR if exist "C:\Program Files\Git\cmd\git.exe" set "GITDIR=C:
 if not defined GITDIR if exist "%LOCALAPPDATA%\Programs\Git\cmd\git.exe" set "GITDIR=%LOCALAPPDATA%\Programs\Git\cmd"
 if defined GITDIR set "PATH=%GITDIR%;%PATH%"
 
+echo [%date% %time%] trail start>> "%BRAIN_HOME%\logs\sync.log"
+rem Export WorkBuddy session history and artifact index before pushing.
+rem Failure here must not block the memory sync below.
+"%BRAIN_HOME%\bin\brain.cmd" trail>> "%BRAIN_HOME%\logs\sync.log" 2>&1
+echo [%date% %time%] trail exit=%ERRORLEVEL%>> "%BRAIN_HOME%\logs\sync.log"
+
 echo [%date% %time%] sync start>> "%BRAIN_HOME%\logs\sync.log"
 "%BRAIN_HOME%\bin\brain.cmd" sync -m "auto-sync">> "%BRAIN_HOME%\logs\sync.log" 2>&1
 echo [%date% %time%] exit=%ERRORLEVEL%>> "%BRAIN_HOME%\logs\sync.log"

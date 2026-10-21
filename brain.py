@@ -161,13 +161,35 @@ def _git_env():
     return env
 
 
-def run_git(args, cwd=None, timeout=90, check=False):
-    """执行 git，返回 (code, stdout, stderr)。"""
+def _proxy_error(err):
+    """判断是否为"配了代理但代理没开"这类错误。"""
+    e = (err or "").lower()
+    if "proxy" not in e:
+        return False
+    return any(k in e for k in ("could not connect", "failed to connect",
+                                "connection refused", "proxy connect"))
+
+
+_PROXY_BYPASS = False
+
+
+def run_git(args, cwd=None, timeout=90, check=False, _noproxy=False):
+    """执行 git，返回 (code, stdout, stderr)。
+
+    代理策略：先按 git 全局配置执行；若失败且是"代理连不上"，
+    自动绕过代理重试一次直连，并在本次运行内记住这个状态——
+    国内经常是代理没启动但直连可用，不这样兜底会让 brain sync 直接失败
+    （实测 push 报 proxy 127.0.0.1 连接超时）。
+    """
+    global _PROXY_BYPASS
+    if _PROXY_BYPASS:
+        _noproxy = True
+    extra = ["-c", "http.https://github.com.proxy=", "-c", "http.proxy="] if _noproxy else []
     try:
         p = subprocess.run(
             # core.quotepath=false：否则 git 会把中文路径输出成 "\346\226..." 转义，
             # 后续按路径做 checkout / show 全部失败（冲突处理曾因此取不到文件）。
-            [GIT, "-c", "core.quotepath=false"] + args,
+            [GIT, "-c", "core.quotepath=false"] + extra + args,
             env=_git_env(),
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
@@ -188,6 +210,12 @@ def run_git(args, cwd=None, timeout=90, check=False):
         if alt:
             info(f"当前 git 无法访问 https，改用 {alt}")
             return run_git(args, cwd=cwd, timeout=timeout, check=check)
+    if p.returncode != 0 and not _noproxy and _proxy_error(err):
+        code, out, err2 = run_git(args, cwd=cwd, timeout=timeout, check=False, _noproxy=True)
+        if code == 0:
+            _PROXY_BYPASS = True
+            info("代理不可用，已改为直连（本次运行内沿用）")
+            return code, out, err2
     if check and p.returncode != 0:
         die(f"git {' '.join(args)} 失败: {p.stderr.strip()}")
     return p.returncode, p.stdout.strip(), p.stderr.strip()
@@ -1189,6 +1217,31 @@ def cmd_sync(a):
             refresh_entries()
 
 
+# ---------------------------------------------------------------- 命令: trail
+
+def cmd_trail(a):
+    """把 WorkBuddy 的会话历史与产物清单导出到记忆仓库。"""
+    base = Path(__file__).resolve().parent
+    jobs = ["export_trail.py"]
+    if not getattr(a, "no_files", False):
+        jobs.append("sync_artifacts.py")
+    extra = []
+    if getattr(a, "full", False):
+        extra.append("--full")
+    if getattr(a, "dry_run", False):
+        extra.append("--dry-run")
+    rc = 0
+    for name in jobs:
+        sp = base / "scripts" / name
+        if not sp.exists():
+            info(f"缺少脚本 scripts/{name}，跳过")
+            continue
+        p = subprocess.run([sys.executable, str(sp)] + extra,
+                           env=dict(os.environ, PYTHONUTF8="1"))
+        rc = rc or p.returncode
+    return rc
+
+
 # ---------------------------------------------------------------- 命令: status / doctor
 
 def cmd_status(a):
@@ -1338,7 +1391,8 @@ def build_parser():
     s.add_argument("-m", "--message", default="")
     s.add_argument("--no-pull", action="store_true")
     s.add_argument("--no-push", action="store_true")
-    s.add_argument("--force", action="store_true", help="放行批量删除（默认拦截 ≥3 条或 ≥30% 的删除）")
+    # 注意：argparse 的 help 会走 % 格式化，裸 "%" 会让 `brain sync --help` 抛 ValueError
+    s.add_argument("--force", action="store_true", help="放行批量删除（默认拦截 ≥3 条或 ≥30%% 的删除）")
     s.set_defaults(func=cmd_sync)
 
     s = sub.add_parser("distill", help="记忆体检：找重复/过时/过长，生成蒸馏任务包")
@@ -1352,6 +1406,12 @@ def build_parser():
 
     s = sub.add_parser("status", help="查看状态")
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("trail", help="导出 WorkBuddy 会话历史与产物清单")
+    s.add_argument("--full", action="store_true", help="忽略缓存，全量重建")
+    s.add_argument("--dry-run", action="store_true", help="只统计，不写文件")
+    s.add_argument("--no-files", action="store_true", help="只导出对话，不同步产物文档")
+    s.set_defaults(func=cmd_trail)
 
     s = sub.add_parser("doctor", help="环境自检")
     s.set_defaults(func=cmd_doctor)
