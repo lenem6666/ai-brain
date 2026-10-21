@@ -162,6 +162,23 @@ def main():
     else:
         skipped.append("Codex（未安装）")
 
+    # 4) Cursor / Gemini CLI：装了才写。两者都是整份协议文件，不与人手写内容混排。
+    for key, label, base, rel in (
+        ("cursor", "Cursor", HOME / ".cursor", ".cursor/rules/brain.mdc"),
+        ("gemini", "Gemini CLI", HOME / ".gemini", ".gemini/GEMINI.md"),
+    ):
+        if not base.exists():
+            skipped.append(f"{label}（未安装）")
+            continue
+        txt = render(key)
+        if not txt:
+            skipped.append(f"{label}（编译失败）")
+            continue
+        dest = HOME / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(txt, encoding="utf-8", newline="\n")
+        ok.append(f"{rel}（{len(txt)} 字符）")
+
     print("已刷新：")
     for x in ok:
         print("  [ok]", x)

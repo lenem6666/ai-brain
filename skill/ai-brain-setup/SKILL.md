@@ -90,7 +90,32 @@ brain add --type preference --title "标题" --body "正文" --tags "标签"
 | 两台机器同时改同一条 | 自动保留一份「冲突副本」，等 `brain distill` 合并，不丢字 |
 | 程序更新 | `git -C <程序根> pull`，或删掉程序目录重跑自检（记忆库不受影响） |
 
-## 六、安全
+## 六、多个 AI 客户端怎么分工（用户问到时按这个答）
+
+三层责任要分清，不要笼统说"每个 AI 都得装一遍"：
+
+| 层 | 数量 | 说明 |
+|---|---|---|
+| **记忆数据** | 全机唯一一份 | `<数据目录>/memory/`，所有 AI 共用同一个 git 仓库 |
+| **入口/协议文件** | 每个 AI 一份，自动生成 | 告诉该 AI"开场读 memory、结束写 memory"，是纯文本，不是 Skill |
+| **本自举 Skill** | 只装在 WorkBuddy | 它是安装器，跑一次把上面两层装好；其他 AI 没有 WorkBuddy 的技能机制，装不了也不需要有 |
+
+因此：
+
+- **本机**：本 Skill 只装 WorkBuddy 一份。它执行 `refresh` 时会自动为**已安装**的客户端生成对应入口：
+  Claude Code → `~/.claude/CLAUDE.md`（区块合并，保留手写内容）；
+  WorkBuddy / Claude Code 技能 → `~/.workbuddy/skills/second-brain/`、`~/.claude/skills/second-brain/`；
+  Codex → `~/.codex/AGENTS.md`（区块追加，保留原有规则）；
+  Cursor → `~/.cursor/rules/brain.mdc`；Gemini CLI → `~/.gemini/GEMINI.md`。
+  某客户端目录不存在则跳过，不造空目录。
+- **新电脑**：同样只装 WorkBuddy 一份即可。**前提是这台机器上要用到哪个 AI，就先让那个 AI 的配置目录存在**
+  （装过并至少启动过一次），否则 refresh 会判定"未安装"而跳过；之后补装了别的 AI，重跑一次
+  `<程序根>\bin\brain.cmd sync`（或 `scripts/refresh.py`）即可补上入口，不必重装本 Skill。
+- **只有 Codex、没有 WorkBuddy 的机器**：`install-skill.ps1` 用不上（它往 WorkBuddy 技能目录装）。
+  改为直接跑自举脚本 `python <程序根>/scripts/ensure.py`（需系统有 Python 3.8+），
+  它照样完成安装、拉库、部署 Codex 入口。
+
+## 七、安全
 
 - 记忆库是**私有**仓库，里面是用户的完整画像；不要贴到公开渠道、不要写进公开 issue。
 - 不要把 token 写进任何文件；脚本只在 clone 那一刻临时使用，随后把 remote 还原成无 token 的地址。
